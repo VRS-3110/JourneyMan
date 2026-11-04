@@ -16,6 +16,10 @@ import { connectionsHead, bridgeSection, notionSection, activitySection } from '
 import { parseActivity, toSessions, applyActivity, rollForward, suggestRule, journalText, targetName } from './activity.js';
 import { makeApi, syncLink, inspectDatabase, journalMap, notionId, writeJournal } from './notion.js';
 import { localDay } from './reports.js';
+import { callAi } from './ai.js';
+import { supabase, syncOnce, sessionFromHash, toSession, ensureToken } from './sync.js';
+import { nextUp } from './insights.js';
+import { findByName } from './parse.js';
 
 const VIEWS = {
   inbox: { title: 'Inbox', icon: 'inbox' },
@@ -86,6 +90,7 @@ function renderAll(full) {
   if (full || !(typingInBody && ['journal', 'review', 'connections'].includes(ui.route.view))) renderBody();
   renderDetail(full);
   renderTimer();
+  $('#brain-dump').hidden = !aiReady();
   if (full) {
     const ctx = context();
     $('#qa-input').placeholder = `Add to ${ctx.label}…  try: Plan the week #project ~30m tomorrow`;
@@ -138,6 +143,7 @@ function renderHead() {
         <label class="mini"><span>Deadline</span><input type="date" data-pfield="deadline" value="${p.deadline || ''}"></label>
         <label class="mini"><span>Status</span><select data-pfield="status">${status}</select></label>
         ${notionField(p.notionUrl, 'pfield')}
+        ${aiReady() ? `<button type="button" class="btn small" data-ai="breakdown">${icon('sparkle')} Suggest next steps</button>` : ''}
         <button type="button" class="btn small ghost danger" id="delete-project">Delete project</button>
       </div>
       <textarea class="notes-input" data-pfield="notes" rows="2" placeholder="Notes: what does done look like? (Keep longer notes in Notion.)">${esc(p.notes)}</textarea>`;
@@ -306,7 +312,7 @@ function renderBody() {
       return;
     }
     case 'review': {
-      body.innerHTML = reviewBody(store, { notion: !!(store.state.settings.notion.journal && bridgeReady()) });
+      body.innerHTML = reviewBody(store, { notion: !!(store.state.settings.notion.journal && bridgeReady()), ai: aiReady() });
       return;
     }
     case 'connections': {
@@ -558,14 +564,12 @@ function openTask(id) {
   ui.pendingSelect = t.id;
   go(home);
 }
-function aiReady() { return false; }
-function onAi() {}
 
 /* ---------- phase 4: Notion bridge, journal, review ---------- */
 const bridgeReady = () => !!(store.state.settings.notion.workerUrl && store.state.settings.notion.appKey);
 const notionApi = () => makeApi(store.state.settings.notion);
-function connectionsExtra() { return ''; }
-function extraConnections() { return ''; }
+function connectionsExtra() { return ', device sync and Claude'; }
+function extraConnections() { return syncSection() + aiSection(); }
 
 function setNotion(fields) {
   store.updateSettings({ notion: { ...store.state.settings.notion, ...fields } });
@@ -728,6 +732,7 @@ async function connectionsAction(act, el) {
       const res = await fetch(`${base}/health`, { headers: { authorization: `Bearer ${n.appKey}` } });
       const data = await res.json().catch(() => ({}));
       ui.bridgeHealth = res.ok ? data : { error: data.error || `The bridge answered ${res.status}` };
+      if (res.ok) store.updateSettings({ ai: { ...store.state.settings.ai, available: !!data.ai } });
     } catch { ui.bridgeHealth = { error: 'Could not reach the bridge. Check the URL, and that ALLOWED_ORIGINS includes this page.' }; }
     renderBody();
   } else if (act === 'link-inspect') {
@@ -770,6 +775,30 @@ async function connectionsAction(act, el) {
     } catch (err) { toast(`Notion: ${err.message}`); }
   } else if (act === 'journal-clear') {
     setNotion({ journal: null });
+  } else if (act === 'sync-send') {
+    const cfg = store.state.settings.sync;
+    if (!cfg.url || !cfg.anonKey) { toast('Add your Supabase project URL and anon key first.'); return; }
+    if (!/.+@.+\..+/.test(cfg.email || '')) { toast('Enter your email first.'); return; }
+    try {
+      await supabase(cfg).sendCode(cfg.email.trim(), location.origin + location.pathname);
+      ui.codeSent = true;
+      toast('Check your email for a 6-digit code (or open the link on this device).');
+      renderBody();
+    } catch (err) { toast(`Supabase: ${err.message}`); }
+  } else if (act === 'sync-verify') {
+    const cfg = store.state.settings.sync;
+    const code = ($('#sync-code')?.value || '').trim();
+    if (!code) { toast('Enter the code from the email.'); return; }
+    try {
+      const session = toSession(await supabase(cfg).verifyCode(cfg.email.trim(), code));
+      await signedIn(session);
+    } catch (err) { toast(`Supabase: ${err.message}`); }
+  } else if (act === 'sync-now') {
+    await runDeviceSync();
+  } else if (act === 'sync-signout') {
+    store.updateSettings({ sync: { ...store.state.settings.sync, session: null, state: {}, lastResult: null, lastError: null } });
+    ui.codeSent = false;
+    toast('Signed out. This device keeps its data.');
   } else if (act === 'rule-del') {
     const rules = [...store.state.settings.activityRules];
     const [gone] = rules.splice(Number(el.dataset.i), 1);
@@ -783,6 +812,13 @@ async function reviewAction(act, el) {
     const done = store.state.projects.filter((p) => p.status === 'done');
     for (const p of done) store.updateProject(p.id, { status: 'archived' });
     toast(`Archived ${done.length} project${done.length === 1 ? '' : 's'}`, () => done.forEach((p) => store.updateProject(p.id, { status: 'done' })));
+  } else if (act === 'ai-review') {
+    el.disabled = true;
+    try {
+      const notes = $('#review-notes').value.trim();
+      const out = await callAi(store.state.settings.notion, 'review', { summary: reviewSummary(store, ''), notes });
+      $('#review-notes').value = `${out.reflection}\n\nFocus next week:\n${(out.focus || []).map((f) => `- ${f}`).join('\n')}${notes ? `\n\n${notes}` : ''}`;
+    } catch (err) { toast(err.message); } finally { el.disabled = false; }
   } else if (act === 'finish') {
     const notes = $('#review-notes').value.trim();
     const summary = reviewSummary(store, notes);
@@ -807,12 +843,237 @@ function onSettingInput(el) {
   const value = el.type === 'checkbox' ? el.checked : el.value.trim();
   store.updateSettings({ [group]: { ...store.state.settings[group], [key]: value } }, { silent: true });
   if (path === 'notion.autoSync') scheduleAutoSync();
+  if (path === 'sync.auto') scheduleDeviceSync();
 }
 
 let autoTimer = 0;
 function scheduleAutoSync() {
   clearInterval(autoTimer);
   if (store.state.settings.notion.autoSync && bridgeReady()) autoTimer = setInterval(() => runNotionSync(null, { quiet: true }), 10 * 60_000);
+}
+
+/* ---------- phase 5: Claude ---------- */
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+function aiReady() { return bridgeReady() && !!store.state.settings.ai?.available; }
+const isDay = (s) => (/^\d{4}-\d{2}-\d{2}$/.test(s || '') ? s : null);
+
+let aiFlow = null;
+function openAiDialog(title, html, goLabel, onGo) {
+  $('#ai-title').textContent = title;
+  $('#ai-body').innerHTML = html;
+  $('#ai-status').textContent = '';
+  $('#ai-go').textContent = goLabel;
+  $('#ai-go').hidden = !onGo;
+  aiFlow = onGo;
+  if (!$('#ai-dialog').open) $('#ai-dialog').showModal();
+}
+/* A checklist of suggested tasks; `add(picked)` creates the ticked ones. */
+function showSuggestions(title, items, add) {
+  const chips = (t) => [
+    t.project && `<span class="chip where">${esc(t.project)}</span>`,
+    t.area && !t.project && `<span class="chip where">${esc(t.area)}</span>`,
+    t.when && `<span class="chip">${esc(formatDay(t.when, store.today()))}</span>`,
+    t.deadline && `<span class="chip deadline">${icon('flag')}${esc(formatDay(t.deadline, store.today()))}</span>`,
+    t.estimate && `<span class="chip">${icon('clock')}${formatMinutes(t.estimate)}</span>`,
+    t.priority && `<span class="chip prio-chip">${'!'.repeat(t.priority)}</span>`,
+  ].filter(Boolean).join('');
+  const label = () => { const n = $$('#ai-body [data-pick]:checked').length; return `Add ${n} task${n === 1 ? '' : 's'}`; };
+  openAiDialog(title, items.length
+    ? `<ul class="suggest">${items.map((t, i) => `<li><label><input type="checkbox" data-pick="${i}" checked>
+      <span><b>${esc(t.title)}</b>${t.notes ? `<small class="muted">${esc(t.notes)}</small>` : ''}<span class="task-meta">${chips(t)}</span></span></label></li>`).join('')}</ul>`
+    : '<p class="hint">Claude had nothing to suggest.</p>',
+  `Add ${items.length} task${items.length === 1 ? '' : 's'}`, async () => {
+    const picked = $$('#ai-body [data-pick]:checked').map((c) => items[Number(c.dataset.pick)]);
+    add(picked);
+    $('#ai-dialog').close();
+    toast(`Added ${picked.length} task${picked.length === 1 ? '' : 's'}`);
+  });
+  $('#ai-go').hidden = !items.length;
+  $('#ai-body').onchange = () => { $('#ai-go').textContent = label(); };
+}
+function addSuggested(t, projectId = null) {
+  let pid = projectId, aid = null;
+  if (!pid && t.project) {
+    const p = findByName(store.state.projects, t.project);
+    pid = p ? p.id : store.addProject(t.project, { areaId: t.area ? findByName(store.state.areas, t.area)?.id || null : null }).id;
+  }
+  if (!pid && t.area) aid = findByName(store.state.areas, t.area)?.id || null;
+  store.addTask({ title: t.title, projectId: pid, areaId: pid ? null : aid, when: t.when, deadline: t.deadline, estimate: t.estimate || null, priority: t.priority || 0, notes: t.notes || '' });
+}
+
+function brainDump() {
+  openAiDialog('Brain dump', `<p class="hint">Type or paste everything on your mind. Claude splits it into tasks with projects, dates and estimates, and you choose which to add.</p>
+    <textarea id="dump-text" class="journal-text" rows="9" placeholder="call bank about card, finish NLSC lit review by friday, gym 3x this week, buy notebook…"></textarea>`,
+  'Turn into tasks', async () => {
+    const text = $('#dump-text').value.trim();
+    if (!text) return;
+    $('#ai-status').textContent = 'Asking Claude…';
+    const today = store.today();
+    const out = await callAi(store.state.settings.notion, 'plan', {
+      text, today, weekday: WEEKDAYS[fromISO(today).getDay()],
+      areas: store.state.areas.map((a) => a.name),
+      projects: store.state.projects.filter((p) => p.status === 'active').map((p) => p.name),
+    });
+    showSuggestions('Add these tasks?', (out.tasks || []).map((t) => ({
+      title: t.title, project: t.project || '', area: t.area || '', when: isDay(t.when), deadline: isDay(t.deadline),
+      estimate: t.estimate_minutes > 0 ? t.estimate_minutes : null, priority: Math.max(0, Math.min(3, t.priority || 0)), notes: t.notes || '',
+    })), (picked) => picked.forEach((t) => addSuggested(t)));
+  });
+  setTimeout(() => $('#dump-text')?.focus(), 0);
+}
+
+async function suggestSteps() {
+  const p = store.project(ui.route.id);
+  if (!p) return;
+  const { open, done } = store.projectTasks(p.id);
+  openAiDialog(`Next steps for ${p.name}`, '<p class="hint">Asking Claude…</p>', '', null);
+  try {
+    const out = await callAi(store.state.settings.notion, 'breakdown', {
+      today: store.today(), project: p.name, area: store.area(p.areaId)?.name || '', deadline: p.deadline || '', notes: p.notes || '',
+      open: open.map((t) => t.title), done: done.slice(0, 20).map((t) => t.title),
+    });
+    showSuggestions(`Next steps for ${p.name}`, (out.steps || []).map((x) => ({ title: x.title, estimate: x.estimate_minutes > 0 ? x.estimate_minutes : null, notes: x.notes || '' })),
+      (picked) => picked.forEach((t) => addSuggested(t, p.id)));
+  } catch (err) { $('#ai-body').innerHTML = `<p class="late-text">${esc(err.message)}</p>`; }
+}
+
+async function askNow() {
+  const minutes = Number($('#now-min')?.value || 30);
+  const energy = $('#now-energy')?.value || 'medium';
+  ui.aiNowHtml = `<p class="hint">${icon('sparkle')} Asking Claude…</p>`;
+  renderBody();
+  const now = store.now();
+  const candidates = nextUp(store, { limit: 12 }).map((x) => {
+    const p = store.projectOf(x.task);
+    return { id: x.task.id, title: x.task.title, project: p ? p.name : '', estimate: x.task.estimate || 0, deadline: x.task.deadline || p?.deadline || '', reasons: x.reasons.join('; ') };
+  });
+  if (!candidates.length) { ui.aiNowHtml = '<p class="hint">Nothing open to choose from.</p>'; renderBody(); return; }
+  try {
+    const out = await callAi(store.state.settings.notion, 'now', {
+      minutes, energy, time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`, weekday: WEEKDAYS[now.getDay()], candidates,
+    });
+    const t = store.task(out.task_id) || store.task(candidates[0].id);
+    ui.aiNowHtml = `<div class="ai-pick" data-id="${t.id}"><b>${icon('sparkle')} ${esc(t.title)}</b>
+      <p>${esc(out.reason)}</p><p class="muted">First step: ${esc(out.first_step)}</p>
+      <div class="row-actions-inline"><button type="button" class="btn small primary" data-nu="start">${icon('play')} Start</button><button type="button" class="btn small ghost" data-ai="now-close">Close</button></div></div>`;
+  } catch (err) {
+    ui.aiNowHtml = `<p class="late-text">${esc(err.message)}</p><button type="button" class="btn small ghost" data-ai="now-close">Close</button>`;
+  }
+  renderBody();
+}
+
+async function aiJournal() {
+  const day = ui.journalDay || store.today();
+  const btn = $('[data-act="ai-journal"]');
+  if (btn) btn.disabled = true;
+  try {
+    const out = await callAi(store.state.settings.notion, 'journal', { day: longDay(day), facts: $('#journal-text').value, notes: $('#journal-notes').value });
+    $('#journal-text').value = out.entry;
+    toast('Draft written. Edit it, then Save.');
+  } catch (err) { toast(err.message); } finally { if (btn) btn.disabled = false; }
+}
+
+function onAi(kind) {
+  if (kind === 'journal') return aiJournal();
+  if (kind === 'breakdown') return suggestSteps();
+  if (kind === 'now-go') return askNow();
+  if (kind === 'now-close') { ui.aiNowHtml = ''; renderBody(); return; }
+  if (kind === 'now') {
+    ui.aiNowHtml = `<div class="ai-now-form">${icon('sparkle')} I have
+      <select id="now-min">${[15, 30, 45, 60, 90, 120].map((m) => `<option value="${m}"${m === 30 ? ' selected' : ''}>${formatMinutes(m)}</option>`).join('')}</select>
+      and my energy is <select id="now-energy"><option>low</option><option selected>medium</option><option>high</option></select>
+      <button type="button" class="btn small primary" data-ai="now-go">Ask Claude</button>
+      <button type="button" class="btn small ghost" data-ai="now-close">Cancel</button></div>`;
+    renderBody();
+  }
+}
+
+function aiSection() {
+  const ok = aiReady();
+  return `<section class="card" id="ai">
+    <h2 class="card-title">${icon('sparkle')} Claude</h2>
+    <p class="card-sub">With <code>ANTHROPIC_API_KEY</code> set on your bridge, JourneyMan can turn a brain dump into tasks, suggest a project's next steps, pick what to do now from your Next up list, and draft your journal entry and weekly reflection. It uses Claude Opus 5.5 with structured answers, and if Claude declines a request, Anthropic's recommended fallback model answers it.</p>
+    <p class="card-sub">What goes to Anthropic, through your bridge: the text you type for it, plus the task titles, project and area names, dates and estimates each feature needs. Nothing is sent unless you press a Claude button.</p>
+    <p>${ok ? `<span class="good-text">${icon('ok')} Ready.</span> Look for ✨ in quick add, on project pages, in Next up, the Journal and the Review.` : `${icon('pause')} Not set up. Add the key on the bridge, then <b>Test connection</b> above.`}</p>
+  </section>`;
+}
+
+/* ---------- phase 5: sync across devices ---------- */
+const syncCfg = () => store.state.settings.sync;
+const syncReady = () => !!(syncCfg().url && syncCfg().anonKey && syncCfg().session);
+
+async function signedIn(session) {
+  const cfg = syncCfg();
+  session.email = session.email || cfg.email;
+  // A device that already has data and has never synced: merge it in, or start from the synced copy.
+  if (!cfg.state?.cursor && store.state.tasks.length) {
+    const merge = confirm(`This device already has ${store.state.tasks.length} tasks.\n\nOK: add them to your synced data.\nCancel: replace them with your synced data.`);
+    if (!merge) {
+      const keep = store.state.settings;
+      await storage.replaceAll({ settings: keep });
+      store.load({ settings: keep });
+    }
+  }
+  store.updateSettings({ sync: { ...syncCfg(), session, state: syncCfg().state || {} } }, { silent: true });
+  ui.codeSent = false;
+  scheduleDeviceSync();
+  await runDeviceSync();
+}
+
+async function runDeviceSync({ quiet = false } = {}) {
+  if (ui.deviceSyncing || !syncReady() || !navigator.onLine) return;
+  ui.deviceSyncing = true;
+  const api = supabase(syncCfg());
+  try {
+    const { token, session } = await ensureToken(api, syncCfg().session);
+    const { state, summary } = await syncOnce(store, api, token, syncCfg().state || {});
+    store.updateSettings({ sync: { ...syncCfg(), session, state, lastResult: summary, lastError: null } }, { silent: true });
+    if (!quiet) toast(summary.pushed + summary.pulled + summary.removed ? `Synced: ${summary.pushed} sent, ${summary.pulled} received${summary.removed ? `, ${summary.removed} removed` : ''}` : 'Everything is in sync');
+  } catch (err) {
+    const signedOut = err.status === 401 || /refresh token/i.test(err.message);
+    store.updateSettings({ sync: { ...syncCfg(), lastError: err.message, ...(signedOut ? { session: null } : {}) } }, { silent: true });
+    if (!quiet || signedOut) toast(signedOut ? 'Sync: please sign in again.' : `Sync: ${err.message}`);
+  } finally {
+    ui.deviceSyncing = false;
+    if (ui.route.view === 'connections') renderBody();
+  }
+}
+
+let deviceTimer = 0, deviceSoon = 0;
+function scheduleDeviceSync() {
+  clearInterval(deviceTimer);
+  if (syncCfg().auto && syncReady()) deviceTimer = setInterval(() => runDeviceSync({ quiet: true }), 2 * 60_000);
+}
+/* After a local change, sync again in 20 seconds (batched). */
+function soonDeviceSync() {
+  if (!syncCfg().auto || !syncReady() || ui.deviceSyncing) return;
+  clearTimeout(deviceSoon);
+  deviceSoon = setTimeout(() => runDeviceSync({ quiet: true }), 20_000);
+}
+
+function syncSection() {
+  const cfg = syncCfg();
+  const s = cfg.session;
+  const r = cfg.lastResult;
+  return `<section class="card" id="sync">
+    <h2 class="card-title">${icon('sync')} Sync across devices</h2>
+    <p class="card-sub">Use JourneyMan on your Mac and your phone. Tasks, projects, areas, time, journals and shared settings sync through your own free Supabase project. Each device keeps working offline, and the newer edit always wins. Setup steps are in <code>supabase/README.md</code>.</p>
+    <div class="form-grid">
+      <label class="field"><span>Supabase project URL</span><input type="url" data-set="sync.url" value="${esc(cfg.url)}" placeholder="https://abcd.supabase.co"></label>
+      <label class="field"><span>Anon (public) key</span><input type="password" data-set="sync.anonKey" value="${esc(cfg.anonKey)}" autocomplete="off"></label>
+    </div>
+    ${s ? `<p class="sync-status">${icon('ok')} Signed in as <b>${esc(s.email || cfg.email || 'you')}</b> · last sync ${cfg.state?.lastSync ? esc(new Date(cfg.state.lastSync).toLocaleTimeString()) : 'not yet'}${r ? ` · ${r.pushed} sent, ${r.pulled} received` : ''}${cfg.lastError ? ` · <span class="late-text">${esc(cfg.lastError)}</span>` : ''}</p>
+      <div class="row-actions-inline">
+        <button type="button" class="btn small" data-act="sync-now">${icon('sync')} Sync now</button>
+        <label class="check-field"><input type="checkbox" data-set="sync.auto"${cfg.auto ? ' checked' : ''}> Sync automatically</label>
+        <button type="button" class="btn small ghost" data-act="sync-signout">Sign out</button>
+      </div>`
+    : `<div class="row-actions-inline">
+        <input type="email" data-set="sync.email" value="${esc(cfg.email || '')}" placeholder="you@example.com" class="grow" autocomplete="email">
+        <button type="button" class="btn small" data-act="sync-send">Email me a code</button>
+      </div>
+      ${ui.codeSent ? `<div class="row-actions-inline"><input type="text" id="sync-code" inputmode="numeric" placeholder="6-digit code" autocomplete="one-time-code"><button type="button" class="btn small primary" data-act="sync-verify">Sign in</button></div>` : ''}`}
+  </section>`;
 }
 
 /* ---------- actions ---------- */
@@ -1130,6 +1391,13 @@ function bind() {
   $('#import-file').addEventListener('change', (e) => { if (e.target.files[0]) importBackup(e.target.files[0]); e.target.value = ''; });
   $('#import-notion-btn').addEventListener('click', () => { $('#settings').close(); pickNotionCsv(); });
   $('#toast').addEventListener('click', (e) => { if (e.target.closest('#toast-undo')) undoLast(); });
+  $('#brain-dump').addEventListener('click', brainDump);
+  $('#ai-go').addEventListener('click', async () => {
+    if (!aiFlow) return;
+    const btn = $('#ai-go');
+    btn.disabled = true;
+    try { await aiFlow(); } catch (err) { $('#ai-status').textContent = err.message; } finally { btn.disabled = false; }
+  });
 
   $('#timer').addEventListener('click', onTimerClick);
   $('#timer').addEventListener('change', (e) => {
@@ -1248,6 +1516,7 @@ function bind() {
     const np = e.target.closest('[data-new-project]');
     if (np) { newProject(np.dataset.newProject); return; }
     if (e.target.closest('[data-import-notion]')) { pickNotionCsv(); return; }
+    if (e.target.closest('[data-ai]')) { onAi(e.target.closest('[data-ai]').dataset.ai); return; }
     if (e.target.closest('#delete-project')) {
       const p = store.project(ui.route.id);
       const n = store.projectStats(p.id).open;
@@ -1347,6 +1616,7 @@ function bind() {
     if (document.hidden) return;
     checkDay();
     if (ui.route.view === 'journal') refreshActivity();
+    runDeviceSync({ quiet: true });
   });
   setInterval(checkDay, 60_000);
 }
@@ -1426,12 +1696,23 @@ async function boot() {
   if (!storage.ok) banner('Storage is unavailable in this window (private browsing?), so changes will not be kept.');
   ui.lastDay = store.today();
   setInterval(tick, 1000);
+  // Coming back from a Supabase sign-in link: #access_token=…
+  const linkSession = sessionFromHash(location.hash);
+  if (linkSession) {
+    history.replaceState(null, '', location.pathname + '#connections');
+    ui.pendingSession = linkSession;
+  }
   store.subscribe(() => renderAll(false));
   await loadFolder();
   bind();
   onRoute();
   scheduleAutoSync();
   if (store.state.settings.notion.autoSync) runNotionSync(null, { quiet: true });
+  if (ui.pendingSession) { const sess = ui.pendingSession; ui.pendingSession = null; signedIn(sess); }
+  scheduleDeviceSync();
+  runDeviceSync({ quiet: true });
+  store.subscribe(soonDeviceSync);
+  window.addEventListener('online', () => runDeviceSync({ quiet: true }));
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }

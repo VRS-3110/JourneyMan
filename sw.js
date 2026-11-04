@@ -1,11 +1,11 @@
 /* JourneyMan — offline support. Serves the saved copy at once and refreshes it in the background.
    Bump CACHE when the file list changes. */
-const CACHE = 'journeyman-v4';
+const CACHE = 'journeyman-v5';
 const FILES = [
   './', 'index.html', 'css/app.css',
   'js/app.js', 'js/model.js', 'js/parse.js', 'js/db.js', 'js/importers.js', 'js/reports.js', 'js/charts.js', 'js/ui.js',
   'js/views/time.js', 'js/views/insights.js', 'js/insights.js', 'js/views/journal.js', 'js/views/review.js',
-  'js/views/connections.js', 'js/activity.js', 'js/notion.js',
+  'js/views/connections.js', 'js/activity.js', 'js/notion.js', 'js/ai.js', 'js/sync.js',
   'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
 

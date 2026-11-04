@@ -130,3 +130,55 @@ What was built in each phase, how it was checked and what is left. Newest last.
 - **Unit tests:** 49 in all. New ones cover mapping, page ↔ task conversion, a full two-way sync against an in-memory Notion (pull, push, create both ways, time write-back, archive, removal, no-op), a conflict, the API caller, writing the journal, sessions, matching, summaries, double-counting protection, planned against actual, the journal text and moving tasks forward. Also 3 tests for the bridge: key, origin, allowed routes and token.
 - **Browser run:** the real worker code ran on Node, with Notion replaced by an in-memory fake. The run covered connecting, looking up and linking a database, sync in both directions, setting the journal database, importing a day of activity, assigning, adding time, saving the journal and sending it to Notion, and finishing a review with the summary sent to Notion. No console errors.
 - **Mac helper:** syntax-checked. Its JavaScript was checked under Node with a simulated System Events. It hasn't run on a real Mac yet, because this machine is Linux.
+
+## Phase 5: Sync and AI (4 Nov 2026)
+
+### Claude, through your bridge
+
+- **`worker/src/ai.js`** uses the official Anthropic TypeScript SDK (`@anthropic-ai/sdk` 1.4.0, pinned).
+  - **Model:** Claude Opus 5.5 (`claude-opus-5-5`), which can be changed with `CLAUDE_MODEL`.
+  - **Effort:** `low` for quick extraction and picks, `medium` for writing and planning. Thinking is always on for this model, and effort is the control.
+  - **Structured outputs:** every answer is constrained to a strict JSON schema (`output_config.format`).
+  - **Refusal fallback:** `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`). If Claude declines a request, Anthropic's recommended fallback model answers it in the same call. A full refusal is reported as one.
+  - **Errors:** the SDK's typed errors become readable messages. The SDK retries rate limits and server errors twice on its own.
+  - **No prompt caching.** Each prompt is shorter than the minimum the cache accepts.
+- **Five features, each its own route** (`/ai/plan`, `/ai/breakdown`, `/ai/now`, `/ai/journal`, `/ai/review`), so the bridge can't be used as a general Claude proxy:
+  - **✨ Brain dump:** next to quick add. A messy paragraph becomes tasks with projects, areas, dates, estimates and priority, and you tick which to add.
+  - **Suggest next steps:** on a project page, 3 to 7 steps.
+  - **Ask Claude:** in Next up. You give the minutes you have and your energy, and it picks from your ranked candidates, with a reason and a first step. Start begins the timer.
+  - **Write with Claude:** in the Journal, a first-person entry drafted from the day's facts and your notes.
+  - **Draft with Claude:** in the weekly review, a reflection plus 2 or 3 focuses for next week.
+- The AI buttons appear only once **Test connection** shows Claude is set up on the bridge. Connections says exactly what is sent to Anthropic.
+
+### Sync across devices (Supabase)
+
+- **`supabase/schema.sql`:** one `records` table with row-level security, so each user sees only their rows.
+  - `push_records()` replaces a row only when the incoming one is strictly newer, so an old device can't overwrite newer edits and echoing a record back changes nothing.
+  - A server-side timestamp acts as the pull cursor, so differences between device clocks don't matter.
+- **`js/sync.js`:** offline-first. Each round pushes what changed here since the last push, including deletions (tombstones) and shared settings, then pulls what changed elsewhere.
+  - The newer edit wins on both sides.
+  - Times are compared as instants, because Postgres writes `+00:00` and the app writes `Z`.
+- **Sign-in** uses an email code, or the email link on the same device. The code is what lets you sign in inside the installed app.
+- **On a device that already has tasks**, signing in asks whether to merge them with your synced data or replace them with it.
+- **Sync runs** every 2 minutes, 20 seconds after a change, when the app comes back into view, and when you come back online.
+- **Kept per device:** keys, the session and Mac activity.
+
+### Phone layout
+
+- The lists become a scrollable tab strip at the top.
+- The detail pane goes full screen.
+- Touch targets are larger and the play button is always visible.
+- Forms fit one column.
+- Checked on an iPhone 14 size: no sideways scrolling.
+
+### Fixes found in testing
+
+- The brain-dump list stacked its chips vertically. A style rule meant for list rows was catching them.
+- Sync compared time strings. That would have mis-ordered times written as `…+00:00` against `…Z`. It now compares instants, with a test for the Postgres format.
+
+### Checked
+
+- **Unit tests:** 58 in all. New ones cover the strict AI schemas, the request shape (model, effort, fallback, beta header, structured output), refusals, API errors, unknown routes and missing keys, two devices staying in step (create, edit, delete, prefs, a quiet round), an older edit losing, the Postgres time format, and sign-in sessions with refresh.
+- **Browser run, part 1:** the real bridge code ran on Node with a fake Claude, plus a fake Supabase. It covered connecting the bridge, Brain dump (choose, then add), Suggest next steps, Ask Claude and start the timer, the journal draft and the review draft. All 10 Claude calls used `claude-opus-5-5`, `fallbacks: "default"`, and low or medium effort.
+- **Browser run, part 2:** the Mac signed in and merged its tasks. The phone (iPhone 14 size) signed in and replaced its starter data, ending with the same task count as the Mac. A task completed on the phone showed as done on the Mac after syncing. No console errors.
+- **Not tested against the real services**, because they need your accounts: Cloudflare, Notion, Anthropic, Supabase and the Mac helper on a real Mac. Each one's README has the setup steps, and Connections has a test button for the bridge.

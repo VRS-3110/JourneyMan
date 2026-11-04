@@ -17,6 +17,8 @@ export const DEFAULT_SETTINGS = {
   activityRules: [], // { id, field: 'app' | 'title', contains, target: { kind: 'task' | 'project' | 'area', id } }
   activityIgnore: ['loginwindow', 'ScreenSaverEngine', 'Private'],
   notion: { workerUrl: '', appKey: '', links: [], journal: null, autoSync: false },
+  sync: { url: '', anonKey: '', email: '', session: null, state: {}, auto: true },
+  ai: { available: false },
 };
 
 let lastOrder = 0;
@@ -76,6 +78,8 @@ export function createStore(persist = {}) {
       state.tombstones = data.tombstones || [];
       state.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
       state.settings.notion = { ...DEFAULT_SETTINGS.notion, ...(state.settings.notion || {}) };
+      state.settings.sync = { ...DEFAULT_SETTINGS.sync, ...(state.settings.sync || {}) };
+      state.settings.ai = { ...DEFAULT_SETTINGS.ai, ...(state.settings.ai || {}) };
       emit();
     },
     snapshot() {

@@ -45,6 +45,7 @@
         <span class="qa-plus" aria-hidden="true">+</span>
         <input id="qa-input" type="text" spellcheck="false" placeholder="Add a task… try: Plan the week #getting-started ~30m tomorrow">
         <kbd class="qa-key" aria-hidden="true">N</kbd>
+        <button type="button" class="qa-ai" id="brain-dump" hidden title="Brain dump: turn messy notes into tasks with Claude">✨ Brain dump</button>
       </form>
       <div id="qa-preview" class="qa-preview" aria-live="polite"></div>
       <section id="view-body" class="view-body"></section>
@@ -66,6 +67,15 @@
     <h2 id="ask-title">New</h2>
     <input id="ask-input" type="text" autocomplete="off" required>
     <menu><button value="cancel" formnovalidate class="btn ghost">Cancel</button><button value="ok" class="btn primary" id="ask-ok">Create</button></menu>
+  </form>
+</dialog>
+
+<dialog id="ai-dialog" class="dialog">
+  <form method="dialog" id="ai-form">
+    <h2 id="ai-title">Brain dump</h2>
+    <div id="ai-body"></div>
+    <p class="hint" id="ai-status" role="status"></p>
+    <menu><button value="cancel" formnovalidate class="btn ghost">Close</button><button type="button" class="btn primary" id="ai-go">Turn into tasks</button></menu>
   </form>
 </dialog>
 

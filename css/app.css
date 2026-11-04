@@ -611,3 +611,57 @@ code { font: 12px var(--mono); background: var(--hover); border-radius: 4px; pad
 .draft h3 { margin-top: 0; }
 .rules li { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0; }
 .rules li > span:nth-child(2) { font-weight: 600; flex: 1; }
+
+/* ======================================================================
+   Phase 5 — Claude, device sync, phone layout
+   ====================================================================== */
+.qa-ai { border: 1px solid var(--rule); background: var(--accent-soft); color: var(--accent); border-radius: 7px; font-size: 12px; font-weight: 600; padding: 4px 9px; white-space: nowrap; }
+.qa-ai:hover { border-color: var(--accent); }
+.suggest { list-style: none; margin: 0 0 4px; padding: 0; display: grid; gap: 2px; max-height: 50vh; overflow-y: auto; }
+.suggest li label { display: flex; gap: 10px; align-items: flex-start; padding: 8px 6px; border-radius: 8px; cursor: pointer; }
+.suggest li label:hover { background: var(--hover); }
+.suggest input { margin-top: 3px; accent-color: var(--accent); }
+.suggest li label > span { display: grid; gap: 3px; min-width: 0; }
+.suggest .task-meta { display: flex; flex-wrap: wrap; gap: 5px; }
+.suggest small { font-size: 12px; }
+.ai-out { margin-top: 10px; background: var(--bg); border: 1px solid var(--rule); border-radius: 9px; padding: 10px 12px; font-size: 13px; }
+.ai-now-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ai-now-form .ic { color: var(--accent); }
+.ai-now-form select { height: 28px; border: 1px solid var(--rule); border-radius: 7px; background: var(--field); padding: 0 6px; font-size: 13px; }
+.ai-pick { display: grid; gap: 4px; }
+.ai-pick b { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+.ai-pick b .ic { color: var(--accent); }
+.ai-pick p { margin: 0; }
+.sync-status { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; margin: 10px 0 0; }
+.sync-status > .ic { color: var(--good); }
+#ai-dialog textarea { margin-top: 4px; }
+
+/* Phone: a bottom tab bar for the main lists, full-screen detail, roomier touch targets. */
+@media (max-width: 760px) {
+  body { font-size: 15px; }
+  .app { grid-template-rows: auto minmax(0, 1fr); }
+  .sidebar { position: sticky; top: 0; z-index: 15; padding: max(8px, env(safe-area-inset-top)) 8px 8px; }
+  .sidebar .brand img { width: 24px; height: 24px; }
+  .timer { display: none; }
+  .main-inner { padding: 16px 14px calc(110px + env(safe-area-inset-bottom)); }
+  .title-row h1, .title-input { font-size: 24px; }
+  .view-sub { margin-left: 0; }
+  .quick-add { height: 46px; }
+  .qa-key { display: none; }
+  .qa-enter { display: none; }
+  .task { padding: 9px 6px; }
+  .check { width: 22px; height: 22px; }
+  .play { display: grid; }
+  .row-actions button { padding: 5px 9px; }
+  .has-detail .detail { position: fixed; inset: 0; width: 100%; z-index: 30; padding: max(16px, env(safe-area-inset-top)) 16px 24px; }
+  .d-fields { grid-template-columns: 1fr; }
+  .tiles { grid-template-columns: 1fr 1fr; }
+  .tile b { font-size: 20px; }
+  .health-list li, .unmatched li { grid-template-columns: 1fr auto; }
+  .past li { grid-template-columns: 1fr; }
+  .toast { bottom: calc(16px + env(safe-area-inset-bottom)); }
+  .nu-head h2 { flex-basis: 100%; }
+  .card { padding: 12px; }
+  .form-grid { grid-template-columns: 1fr; }
+  .notion-field input { width: 100%; }
+}

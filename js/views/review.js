@@ -59,7 +59,7 @@ function step(n, title, done, body) {
     <h2 class="card-title"><span class="step-n">${done ? icon('check') : n}</span>${title}</h2>${body}</section>`;
 }
 
-export function reviewBody(store, { notion }) {
+export function reviewBody(store, { notion, ai = false }) {
   const d = reviewData(store);
   const top = d.last.byProject.slice(0, 4).map((b) => `${esc(b.name)} ${hours(b.minutes)}`).join(' · ');
   return [
@@ -85,6 +85,7 @@ export function reviewBody(store, { notion }) {
     step(6, 'Reflect', false, `
       <textarea id="review-notes" class="journal-notes" rows="4" placeholder="What went well? What will you change next week?"></textarea>
       <div class="journal-actions">
+        ${ai ? `<button type="button" class="btn ghost" data-act="ai-review">${icon('sparkle')} Draft with Claude</button>` : ''}
         ${notion ? `<label class="check-field"><input type="checkbox" id="review-notion" checked> Add to my Notion journal</label>` : ''}
         <button type="button" class="btn primary" data-act="finish">Finish review</button>
       </div>`),

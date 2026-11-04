@@ -1,8 +1,10 @@
 // JourneyMan bridge: a small Cloudflare Worker that holds your secrets so the web app never sees them.
 //   /health            → which services are set up
 //   /notion/v1/…       → Notion API (only the calls JourneyMan makes), with your NOTION_TOKEN
-//   /ai/messages       → Claude (phase 5), with your ANTHROPIC_API_KEY
+//   /ai/<feature>      → Claude (phase 5): plan, breakdown, now, journal, review — with your ANTHROPIC_API_KEY
 // Every call needs `Authorization: Bearer <APP_KEY>`, and only ALLOWED_ORIGINS may call from a browser.
+
+import { handleAi } from './ai.js';
 
 const NOTION = 'https://api.notion.com/v1/';
 const DEFAULT_NOTION_VERSION = '2022-06-28';
@@ -73,16 +75,13 @@ export default {
       return new Response(await res.text(), { status: res.status, headers: { 'content-type': 'application/json', ...c.headers } });
     }
 
-    if (url.pathname === '/ai/messages' && request.method === 'POST') {
+    const ai = url.pathname.match(/^\/ai\/([a-z]+)$/);
+    if (ai && request.method === 'POST') {
       if (!env.ANTHROPIC_API_KEY) return json({ error: 'ANTHROPIC_API_KEY is not set on the bridge.' }, 501, c.headers);
-      return handleAi(request, env, c.headers);
+      return handleAi(ai[1], request, env, c.headers);
     }
 
     return json({ error: 'Not found.' }, 404, c.headers);
   },
 };
 
-/* Phase 5 fills this in. */
-async function handleAi(request, env, headers) {
-  return json({ error: 'AI is not set up in this version of the bridge.' }, 501, headers);
-}

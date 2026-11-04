@@ -37,7 +37,7 @@ export function nextUpPanel(store, ui, { ai = false } = {}) {
     <div class="nu-head"><h2>${icon('sparkle')} Next up</h2><div class="seg nu-fit" role="group" aria-label="Time you have">${chips}</div>
       ${ai ? `<button type="button" class="btn small ghost" data-ai="now" title="Ask Claude what to do now">${icon('sparkle')} Ask Claude</button>` : ''}</div>
     ${list.length ? `<ol class="nu-list">${rows}</ol>` : `<p class="hint">${filter ? `Nothing open fits in ${hours(filter)}.` : 'Nothing open yet. Give tasks a project or area and they show up here.'}</p>`}
-    <div id="ai-now" class="ai-out" hidden></div>
+    <div id="ai-now" class="ai-out"${ui.aiNowHtml ? '' : ' hidden'}>${ui.aiNowHtml || ''}</div>
   </section>`;
 }
 
