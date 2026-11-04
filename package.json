@@ -1,0 +1,10 @@
+{
+  "name": "journeyman",
+  "private": true,
+  "type": "module",
+  "description": "JourneyMan: a second brain and time tracker. No build step; open index.html through a local server.",
+  "scripts": {
+    "test": "node --test",
+    "serve": "python3 -m http.server 8000"
+  }
+}

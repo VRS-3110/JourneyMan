@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>JourneyMan</title>
+<meta name="description" content="A second brain and time tracker: capture anything, sort it into areas and projects, and see what to do today.">
+<meta name="theme-color" content="#f4f3f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#222326" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" aria-label="Lists">
+    <div class="brand">
+      <img src="icons/icon.svg" alt="" width="26" height="26">
+      <span>JourneyMan</span>
+    </div>
+    <nav id="nav-views" class="nav"></nav>
+    <div class="nav-section">
+      <span>Areas</span>
+      <button type="button" class="icon-btn" id="add-area" aria-label="New area" title="New area">+</button>
+    </div>
+    <nav id="nav-areas" class="nav nav-areas"></nav>
+    <div class="sidebar-foot">
+      <button type="button" class="foot-btn" id="open-search"><span>Search</span><kbd>⌘K</kbd></button>
+      <button type="button" class="foot-btn" id="open-help"><span>Shortcuts</span><kbd>?</kbd></button>
+      <button type="button" class="foot-btn" id="open-settings"><span>Settings and backup</span></button>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    <div class="main-inner">
+      <header class="main-head">
+        <div id="view-head"></div>
+        <div id="view-meta" class="view-meta"></div>
+      </header>
+      <form id="quick-add" class="quick-add" autocomplete="off">
+        <label class="visually-hidden" for="qa-input">Add a task</label>
+        <span class="qa-plus" aria-hidden="true">+</span>
+        <input id="qa-input" type="text" spellcheck="false" placeholder="Add a task… try: Plan the week #getting-started ~30m tomorrow">
+        <kbd class="qa-key" aria-hidden="true">N</kbd>
+      </form>
+      <div id="qa-preview" class="qa-preview" aria-live="polite"></div>
+      <section id="view-body" class="view-body"></section>
+    </div>
+  </main>
+
+  <aside class="detail" id="detail" aria-label="Task details" hidden></aside>
+</div>
+
+<div class="palette-wrap" id="palette" hidden>
+  <div class="palette" role="dialog" aria-modal="true" aria-label="Search">
+    <input id="palette-input" type="text" spellcheck="false" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="palette-list">
+    <ul id="palette-list" role="listbox"></ul>
+  </div>
+</div>
+
+<dialog id="ask" class="dialog small">
+  <form method="dialog">
+    <h2 id="ask-title">New</h2>
+    <input id="ask-input" type="text" autocomplete="off" required>
+    <menu><button value="cancel" formnovalidate class="btn ghost">Cancel</button><button value="ok" class="btn primary" id="ask-ok">Create</button></menu>
+  </form>
+</dialog>
+
+<dialog id="help" class="dialog">
+  <form method="dialog">
+    <h2>Keyboard shortcuts</h2>
+    <div class="help-cols">
+      <table class="keys">
+        <tr><th>Anywhere</th><td></td></tr>
+        <tr><td><kbd>N</kbd> or <kbd>/</kbd></td><td>Add a task</td></tr>
+        <tr><td><kbd>⌘</kbd><kbd>K</kbd></td><td>Search and jump</td></tr>
+        <tr><td><kbd>G</kbd> then <kbd>I</kbd> <kbd>T</kbd> <kbd>U</kbd> <kbd>A</kbd> <kbd>P</kbd> <kbd>L</kbd></td><td>Go to Inbox, Today, Upcoming, Anytime, Projects, Logbook</td></tr>
+        <tr><td><kbd>⌘</kbd><kbd>Z</kbd></td><td>Undo the last complete or delete</td></tr>
+        <tr><td><kbd>?</kbd></td><td>This help</td></tr>
+        <tr><th>Selected task</th><td></td></tr>
+        <tr><td><kbd>J</kbd> <kbd>K</kbd> or <kbd>↓</kbd> <kbd>↑</kbd></td><td>Move selection</td></tr>
+        <tr><td><kbd>Enter</kbd></td><td>Edit details</td></tr>
+        <tr><td><kbd>X</kbd> or <kbd>Space</kbd></td><td>Complete</td></tr>
+        <tr><td><kbd>T</kbd></td><td>Do it today</td></tr>
+        <tr><td><kbd>⇧</kbd><kbd>T</kbd></td><td>Do it tomorrow</td></tr>
+        <tr><td><kbd>M</kbd></td><td>Move to a project or area</td></tr>
+        <tr><td><kbd>⌫</kbd></td><td>Delete</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>Close details or clear selection</td></tr>
+      </table>
+      <table class="keys">
+        <tr><th>Quick add</th><td></td></tr>
+        <tr><td><code>#project</code></td><td>Put it in a project (new ones are created)</td></tr>
+        <tr><td><code>@area</code></td><td>Put it in an area</td></tr>
+        <tr><td><code>~30m</code> <code>~1h30m</code></td><td>Estimate</td></tr>
+        <tr><td><code>today</code> <code>tomorrow</code> <code>fri</code><br><code>next week</code> <code>in 3 days</code> <code>dec 5</code></td><td>When you'll do it</td></tr>
+        <tr><td><code>3pm</code> <code>15:00</code></td><td>Time (today if no date)</td></tr>
+        <tr><td><code>due fri</code> <code>by dec 5</code></td><td>Deadline</td></tr>
+        <tr><td><code>!</code> <code>!!</code> <code>!!!</code></td><td>Priority</td></tr>
+        <tr><td><code>\sun</code></td><td>Keep a word as text</td></tr>
+      </table>
+    </div>
+    <p class="hint">A weekday means the next one, never today. Anything with no project, area or date goes to the Inbox.</p>
+    <menu><button value="close" class="btn primary">Done</button></menu>
+  </form>
+</dialog>
+
+<dialog id="settings" class="dialog">
+  <form method="dialog">
+    <h2>Settings and backup</h2>
+    <label class="field">
+      <span>Hours you have for tasks on a normal day</span>
+      <input id="set-hours" type="number" min="1" max="16" step="0.5">
+    </label>
+    <p class="hint">Today compares your estimates with this.</p>
+    <h3>Backup</h3>
+    <p class="hint" id="storage-status"></p>
+    <div class="row">
+      <button type="button" class="btn" id="export-btn">Export backup (JSON)</button>
+      <label class="btn" for="import-file">Import backup…</label>
+      <input type="file" id="import-file" accept="application/json,.json" hidden>
+    </div>
+    <h3>Notion</h3>
+    <p class="hint">Bring a Notion database in as a project. In Notion, open the database, choose <b>••• → Export → Markdown &amp; CSV</b>, unzip it, then pick the CSV. Name, Task, Status, Due, Est. hours and Notes columns are recognised.</p>
+    <div class="row"><button type="button" class="btn" id="import-notion-btn">Import a Notion database (CSV)…</button></div>
+    <p class="hint">Any task, project or area can also hold a Notion link: paste it into quick add or the Notion page field, and <b>Open</b> takes you to the page in the Notion app.</p>
+    <h3>Install on your Mac</h3>
+    <p class="hint">Safari: <b>File → Add to Dock</b>. Chrome: the install icon at the right of the address bar. It then opens in its own window and works offline.</p>
+    <menu><button value="close" class="btn primary">Done</button></menu>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" hidden></div>
+<div id="banner" class="banner" role="alert" hidden></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
