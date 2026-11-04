@@ -510,3 +510,42 @@ code { font: 12px var(--mono); background: var(--hover); border-radius: 4px; pad
 .chart-tip .tip-row i { width: 10px; height: 2px; border-radius: 1px; flex: none; }
 .chart-tip .tip-row b { font-variant-numeric: tabular-nums; }
 .chart-tip .tip-row span { color: var(--ink-2); }
+
+/* ======================================================================
+   Phase 3 — next up, health, insights
+   ====================================================================== */
+.next-up { border: 1px solid var(--rule); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; background: linear-gradient(180deg, var(--accent-soft), transparent 70%); }
+.nu-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.nu-head h2 { font: 600 14px var(--font); margin: 0; display: flex; align-items: center; gap: 6px; flex: 1; }
+.nu-head h2 .ic { color: var(--accent); }
+.nu-fit button { font-size: 11.5px; padding: 3px 7px; }
+.nu-fit button[aria-pressed="true"] { background: var(--bg); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.nu-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.nu-row { display: flex; align-items: center; gap: 10px; background: var(--bg); border: 1px solid var(--rule); border-radius: 9px; padding: 7px 10px; }
+.nu-rank { width: 20px; height: 20px; border-radius: 50%; background: var(--hover); color: var(--ink-2); font-size: 11.5px; font-weight: 700; display: grid; place-items: center; flex: none; }
+.nu-main { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.nu-title { border: 0; background: transparent; padding: 0; text-align: left; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nu-title:hover { color: var(--accent); }
+.nu-why { font-size: 12px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nu-row .btn .ic { width: 10px; height: 10px; }
+.next-up .hint { margin-top: 8px; }
+
+.health { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 2px 6px 2px 4px; border-radius: 5px; white-space: nowrap; background: var(--hover); color: var(--ink-2); }
+.health .ic { width: 12px; height: 12px; }
+.h-overdue .ic { color: var(--st-critical); }
+.h-at-risk .ic { color: var(--st-serious); }
+.h-stalled .ic, .h-no-next-action .ic, .h-someday .ic { color: var(--ink-3); }
+.h-on-track .ic { color: var(--st-good); }
+.health-line { display: flex; align-items: center; gap: 8px; margin: 2px 0 0; font-size: 13px; color: var(--ink-2); flex-wrap: wrap; }
+.health-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.health-list li { display: grid; grid-template-columns: minmax(140px, 1fr) auto 2fr; align-items: center; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--rule); font-size: 13px; }
+.health-list li:last-child { border-bottom: 0; }
+.health-list a { display: flex; align-items: center; gap: 8px; text-decoration: none; min-width: 0; }
+.health-list a b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.health-list a:hover b { color: var(--accent); }
+.health-list .muted { font-size: 12.5px; }
+.targets { margin-top: 10px; }
+@media (max-width: 760px) {
+  .health-list li { grid-template-columns: 1fr auto; }
+  .health-list .muted { grid-column: 1 / -1; }
+}

@@ -148,8 +148,9 @@ export function stackedColumns(container, { categories, series, value, format, h
     hover(g, () => {
       const rows = series.map((s) => ({ s, v: value(c.key, s.key) || 0 })).filter((p) => p.v > 0)
         .map((p) => ({ value: format(p.v), label: p.s.label, color: p.s.color }));
+      if (rows.length > 1) rows.unshift({ value: format(totals[i]), label: 'Total' });
+      if (!rows.length) rows.push({ value: format(0), label: series.length === 1 ? series[0].label : 'Total' });
       if (reference) rows.push({ value: format(reference.value(c.key) || 0), label: reference.label });
-      if (rows.length > 1 || !rows.length) rows.unshift({ value: format(totals[i]), label: 'Total' });
       showTip(g, c.label + (c.sub ? ' ' + c.sub : ''), rows);
     });
   });
@@ -217,18 +218,23 @@ export function matrix(container, { points, xLabel, yLabel, quadrants, title }) 
   const [tl, tr, bl, br] = quadrants;
   text(svg, { x: X(0) + 8, y: Y(1) + 16, class: 'quad' }, tl);
   text(svg, { x: X(1) - 8, y: Y(1) + 16, 'text-anchor': 'end', class: 'quad' }, tr);
-  text(svg, { x: X(0) + 8, y: Y(0) - 8, class: 'quad' }, bl);
-  text(svg, { x: X(1) - 8, y: Y(0) - 8, 'text-anchor': 'end', class: 'quad' }, br);
+  text(svg, { x: X(0) + 8, y: Y(0.5) + 16, class: 'quad' }, bl);
+  text(svg, { x: X(1) - 8, y: Y(0.5) + 16, 'text-anchor': 'end', class: 'quad' }, br);
   text(svg, { x: X(0.5), y: height - 6, 'text-anchor': 'middle', class: 'xsub' }, xLabel + ' →');
   text(svg, { x: 12, y: Y(0.5), 'text-anchor': 'middle', class: 'xsub', transform: `rotate(-90 12 ${Y(0.5)})` }, yLabel + ' →');
-  // Points that land on the same spot are nudged apart a little so each stays hoverable.
-  const seen = new Map();
+  // Points within a dot's width of each other are spread round a small ring so each stays visible and hoverable.
+  const placed = [];
   for (const p of points) {
-    const k = `${Math.round(p.x * 40)}:${Math.round(p.y * 40)}`;
-    const n = seen.get(k) || 0;
-    seen.set(k, n + 1);
-    const cx = X(Math.min(Math.max(p.x, 0.02), 0.98)) + (n % 3) * 7 - 7 * (n % 3 ? 0.5 : 0);
-    const cy = Y(Math.min(Math.max(p.y, 0.03), 0.97)) - Math.floor(n / 3) * 7;
+    let cx = X(Math.min(Math.max(p.x, 0.02), 0.98));
+    let cy = Y(Math.min(Math.max(p.y, 0.03), 0.97));
+    const near = placed.filter(([x, y]) => Math.hypot(x - cx, y - cy) < 12).length;
+    if (near) {
+      const angle = near * 2.4; // golden-angle spiral
+      const radius = 12 + 4 * Math.floor(near / 6);
+      cx += Math.cos(angle) * radius;
+      cy += Math.sin(angle) * radius;
+    }
+    placed.push([cx, cy]);
     const dot = el('g', { class: 'pt', 'aria-label': p.label }, svg);
     el('circle', { cx, cy, r: 12, class: 'hit' }, dot);
     el('circle', { cx, cy, r: 5, class: 'dot' }, dot);

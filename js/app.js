@@ -8,6 +8,8 @@ import { notionCsvToTasks } from './importers.js';
 import { $, $$, esc, icon, hours, clockText, download } from './ui.js';
 import { dayReport, parseDuration, weekStart, entriesCsv } from './reports.js';
 import { timeHead, timeBody, timeAfter, exportWeek } from './views/time.js';
+import { insightsHead, insightsBody, insightsAfter, nextUpPanel, healthBadge, projectHealth } from './views/insights.js';
+import { hideTip } from './charts.js';
 
 const VIEWS = {
   inbox: { title: 'Inbox', icon: 'inbox' },
@@ -17,6 +19,7 @@ const VIEWS = {
   projects: { title: 'Projects', icon: 'projects' },
   logbook: { title: 'Logbook', icon: 'logbook' },
   time: { title: 'Time', icon: 'time' },
+  insights: { title: 'Insights', icon: 'insights' },
 };
 const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const DAYS_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -41,8 +44,11 @@ function go(hash) {
 function onRoute() {
   addedMsg = null;
   ui.route = parseRoute();
-  ui.selected = null;
-  ui.detail = false;
+  // A task asked for before the page changed (search result, chart dot, timer) opens once the new view is up.
+  const pending = ui.pendingSelect && store.task(ui.pendingSelect) ? ui.pendingSelect : null;
+  ui.pendingSelect = null;
+  ui.selected = pending;
+  ui.detail = !!pending;
   renderAll(true);
   $('#main').scrollTop = 0;
 }
@@ -86,7 +92,7 @@ function renderNav() {
     const v = VIEWS[view], active = r.view === view;
     return `<a href="#${view}" class="nav-item${active ? ' active' : ''}"${active ? ' aria-current="page"' : ''}>${icon(v.icon)}<span>${v.title}</span>${count ? `<b class="count ${cls}">${count}</b>` : ''}</a>`;
   };
-  $('#nav-views').innerHTML = item('inbox', c.inbox) + item('today', c.today, late ? 'late' : '') + item('upcoming') + item('anytime') + item('projects') + item('logbook') + item('time');
+  $('#nav-views').innerHTML = item('inbox', c.inbox) + item('today', c.today, late ? 'late' : '') + item('upcoming') + item('anytime') + item('projects') + item('logbook') + item('time') + item('insights');
 
   const projLink = (p, color) => {
     const s = store.projectStats(p.id), active = r.view === 'project' && r.id === p.id;
@@ -131,12 +137,15 @@ function renderHead() {
         <input class="title-input" value="${esc(a.name)}" aria-label="Area name" data-afield="name"></div>
       <div class="head-fields">
         <div class="swatches" role="group" aria-label="Colour">${AREA_COLORS.map((c) => `<button type="button" class="swatch${c === a.color ? ' on' : ''}" style="--c:${colorVar(c)}" data-color="${c}" aria-label="${AREA_COLOR_NAMES[c]}" title="${AREA_COLOR_NAMES[c]}" aria-pressed="${c === a.color}"></button>`).join('')}</div>
+        <label class="mini"><span>Target hours a week</span><input type="number" min="0" max="80" step="0.5" data-afield="targetHours" value="${a.targetHours || ''}" placeholder="None" style="width:110px"></label>
         ${notionField(a.notionUrl, 'afield')}
         <button type="button" class="btn small" data-new-project="${a.id}">New project</button>
         <button type="button" class="btn small ghost danger" id="delete-area">Delete area</button>
       </div>`;
   } else if (r.view === 'time') {
     head.innerHTML = timeHead(store, ui);
+  } else if (r.view === 'insights') {
+    head.innerHTML = insightsHead();
   } else {
     const v = VIEWS[r.view];
     const sub = r.view === 'today' ? `<p class="view-sub">${longDate(store.today())}</p>` : '';
@@ -169,7 +178,10 @@ function renderMeta() {
     if (s.estimateLeft) bits.push(`${formatMinutes(s.estimateLeft)} estimated left`);
     if (s.unestimated) bits.push(`${s.unestimated} without an estimate`);
     if (s.daysLeft != null) bits.push(deadlineText(s.daysLeft, true));
-    el.innerHTML = `<div class="progress"><div class="bar"><i style="width:${(s.progress * 100).toFixed(1)}%"></i></div><span>${bits.join(' · ')}</span></div>`;
+    const h = projectHealth(store, r.id);
+    const healthLine = h && h.status !== 'done' && !(h.status === 'on-track' && !store.project(r.id).deadline)
+      ? `<p class="health-line">${healthBadge(h)}<span>${esc(h.detail)}</span></p>` : '';
+    el.innerHTML = `<div class="progress"><div class="bar"><i style="width:${(s.progress * 100).toFixed(1)}%"></i></div><span>${bits.join(' · ')}${s.tracked >= 1 ? ` · ${hours(s.tracked)} tracked` : ''}</span></div>${healthLine}`;
   } else if (r.view === 'inbox') {
     const n = store.inbox().length;
     el.innerHTML = n ? `<p class="hint">Give each item a project, an area or a date, and it leaves the inbox. Keyboard: select, then <kbd>M</kbd> to move or <kbd>T</kbd> for today.</p>` : '';
@@ -222,7 +234,10 @@ function group(key, title, count, inner, startOpen = false) {
 
 function projectCard(p) {
   const s = store.projectStats(p.id), a = store.area(p.areaId);
-  const badge = p.status !== 'active' ? `<span class="badge">${{ someday: 'Someday', done: 'Completed', archived: 'Archived' }[p.status]}</span>` : '';
+  const h = p.status === 'active' ? projectHealth(store, p.id) : null;
+  const badge = p.status !== 'active'
+    ? `<span class="badge">${{ someday: 'Someday', done: 'Completed', archived: 'Archived' }[p.status]}</span>`
+    : h && !(h.status === 'on-track' && !p.deadline) ? healthBadge(h) : '';
   const meta = [`${s.done} of ${s.total} done`];
   if (s.estimateLeft) meta.push(`${formatMinutes(s.estimateLeft)} left`);
   if (s.daysLeft != null && p.status === 'active') meta.push(deadlineText(s.daysLeft));
@@ -243,6 +258,7 @@ function renderBody() {
       break;
     }
     case 'today': {
+      html += nextUpPanel(store, ui, { ai: aiReady() });
       const list = store.todayList();
       const late = list.filter((t) => (t.when && t.when < today) || (!t.when && t.deadline && t.deadline < today));
       const now = list.filter((t) => !late.includes(t));
@@ -257,6 +273,12 @@ function renderBody() {
     case 'time': {
       body.innerHTML = timeBody(store, ui);
       timeAfter(store, ui);
+      return;
+    }
+    case 'insights': {
+      hideTip();
+      body.innerHTML = insightsBody(store);
+      insightsAfter(store, { openTask });
       return;
     }
     case 'upcoming': {
@@ -440,12 +462,8 @@ function onTimerClick(e) {
   const action = e.target.closest('[data-timer]')?.dataset.timer;
   const run = store.running();
   if (!action || !run) return;
-  if (action === 'open') {
-    const t = store.task(run.taskId);
-    const home = t.projectId ? 'project/' + t.projectId : t.when && t.when <= store.today() ? 'today' : t.inbox ? 'inbox' : 'anytime';
-    go(home);
-    setTimeout(() => select(t.id, true), 0);
-  } else if (action === 'stop') toggleTimer(run.taskId);
+  if (action === 'open') openTask(run.taskId);
+  else if (action === 'stop') toggleTimer(run.taskId);
   else if (action === 'keep') store.updateEntry(run.id, { ackUntil: new Date(store.now().getTime() + LONG_RUN * 60_000).toISOString() });
   else if (action === 'cap') { store.stopTimer({ at: new Date(new Date(run.start).getTime() + LONG_RUN * 60_000) }); toast('Logged 3h and stopped the timer'); }
   else if (action === 'discard') { store.discardTimer(); toast('Timer discarded'); }
@@ -497,6 +515,19 @@ function recapCard() {
     ${comp ? `<ul class="compare">${comp}</ul>` : ''}
   </section>`;
 }
+
+/* Opens a task wherever it lives: its home list, selected, with details. */
+function openTask(id) {
+  const t = store.task(id);
+  if (!t) return;
+  const home = t.done ? 'logbook' : t.projectId ? 'project/' + t.projectId : t.inbox ? 'inbox'
+    : t.when && t.when <= store.today() ? 'today' : t.when ? 'upcoming' : t.areaId ? 'area/' + t.areaId : 'anytime';
+  if (location.hash.slice(1) === home) { select(t.id, true); return; }
+  ui.pendingSelect = t.id;
+  go(home);
+}
+function aiReady() { return false; }
+function onAi() {}
 
 /* ---------- actions ---------- */
 function select(id, openDetail) {
@@ -649,11 +680,7 @@ function gotoSource(q) {
       const p = store.projectOf(t);
       items.push({
         label: t.title, icon: t.done ? 'logbook' : 'check', sub: p ? p.name : t.inbox ? 'Inbox' : '',
-        run: () => {
-          const home = t.done ? 'logbook' : p ? 'project/' + p.id : t.inbox ? 'inbox' : t.when && t.when <= store.today() ? 'today' : t.when ? 'upcoming' : t.areaId ? 'area/' + t.areaId : 'anytime';
-          go(home);
-          setTimeout(() => select(t.id, true), 0);
-        },
+        run: () => openTask(t.id),
       });
     }
   }
@@ -827,6 +854,16 @@ function bind() {
     if (e.target.closest('a')) return;
     const np = e.target.closest('[data-new-project]');
     if (np) { newProject(np.dataset.newProject); return; }
+    const fit = e.target.closest('[data-fit]');
+    if (fit) { ui.fitFilter = fit.dataset.fit ? Number(fit.dataset.fit) : null; renderBody(); return; }
+    const nu = e.target.closest('[data-nu]');
+    if (nu) {
+      const id = nu.closest('[data-id]').dataset.id;
+      if (nu.dataset.nu === 'start') { if (store.running()?.taskId !== id) toggleTimer(id); }
+      else openTask(id);
+      return;
+    }
+    if (e.target.closest('[data-ai]')) { onAi(e.target.closest('[data-ai]').dataset.ai); return; }
     const row = e.target.closest('.task');
     if (!row) return;
     const id = row.dataset.id;
@@ -860,6 +897,7 @@ function bind() {
     } else if (el.dataset.afield) {
       let v = el.value;
       if (el.dataset.afield === 'notionUrl') { v = v.trim() || null; syncNotionButton(el, v); }
+      if (el.dataset.afield === 'targetHours') { store.updateArea(ui.route.id, { targetHours: Number(v) > 0 ? Number(v) : null }); return; }
       store.updateArea(ui.route.id, { [el.dataset.afield]: v || (el.dataset.afield === 'name' ? 'Untitled area' : null) });
     }
   };
@@ -970,6 +1008,11 @@ function bind() {
   $('#palette').addEventListener('mousedown', (e) => { if (e.target.id === 'palette') closePalette(); });
 
   document.addEventListener('keydown', onKey);
+  let resizeTimer = 0;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { if (['time', 'insights'].includes(ui.route.view)) renderBody(); }, 150);
+  });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) checkDay(); });
   setInterval(checkDay, 60_000);
 }
@@ -1015,7 +1058,7 @@ function onKey(e) {
   if (gPending) {
     clearTimeout(gPending);
     gPending = 0;
-    const dest = { i: 'inbox', t: 'today', u: 'upcoming', a: 'anytime', p: 'projects', l: 'logbook', m: 'time' }[e.key.toLowerCase()];
+    const dest = { i: 'inbox', t: 'today', u: 'upcoming', a: 'anytime', p: 'projects', l: 'logbook', m: 'time', s: 'insights' }[e.key.toLowerCase()];
     if (dest) { e.preventDefault(); go(dest); }
     return;
   }
