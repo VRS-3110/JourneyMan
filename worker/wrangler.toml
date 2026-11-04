@@ -1,0 +1,15 @@
+# JourneyMan bridge — deploy with `npx wrangler deploy` from this folder.
+name = "journeyman-bridge"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+# Where JourneyMan runs, comma-separated. Your GitHub Pages address and local testing.
+ALLOWED_ORIGINS = "https://vrs-3110.github.io,http://localhost:8000"
+# Notion API version the bridge speaks.
+NOTION_VERSION = "2022-06-28"
+
+# Secrets: set with `npx wrangler secret put NAME` (never commit them):
+#   APP_KEY            a long random password JourneyMan sends with every call
+#   NOTION_TOKEN       your Notion internal integration secret
+#   ANTHROPIC_API_KEY  for the AI features (phase 5)

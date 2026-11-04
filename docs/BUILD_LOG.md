@@ -64,3 +64,69 @@ What was built in each phase, how it was checked and what is left. Newest last.
   - The forecast tooltip no longer shows a redundant "Total" row.
   - The time chart's axis ticks are whole hours.
 - **Checked:** 38 unit tests (9 new for ranking, health states, the stalled and slow-pace cases, the forecast, the focus grid, the matrix and accuracy). The browser run used a month of generated history and covered Next up with its filter, health, every chart with tooltips, clicking from the matrix to a task, and dark mode. No console errors.
+
+## Phase 4: Notion bridge, weekly review and Mac day journal (4 Nov 2026)
+
+### Notion bridge
+
+- **`worker/`:** a Cloudflare Worker that holds `NOTION_TOKEN` and, from phase 5, `ANTHROPIC_API_KEY`.
+  - It forwards only the six Notion calls JourneyMan makes.
+  - It checks an `APP_KEY` with a constant-time comparison, and restricts which websites may call it (`ALLOWED_ORIGINS`).
+  - Notion API version 2022-06-28, which can be changed with `NOTION_VERSION`.
+  - Deploy steps are in `worker/README.md`. I couldn't deploy it myself, because that needs your Cloudflare account and Notion secret.
+- **`js/notion.js`:** linking a Notion database to a project.
+  - Fields are matched automatically from property names and types: title, Status (status, select or checkbox) with its done and not-done values, Due, Est. hours or minutes, Notes, and a "Time spent" number for writing tracked time back. You can change any of them before linking.
+  - Status is written only when done-ness changes, so an in-progress status like "Studying" isn't overwritten.
+- **Two-way sync:**
+  - When only one side changed, that change wins. When both changed, the newer edit wins and it counts as a conflict.
+  - New pages become tasks, and new tasks become pages.
+  - A task deleted here archives its page in Notion, using the Notion id kept on the deleted task's tombstone.
+  - A page removed in Notion removes the task here if it's unchanged since the last sync. Otherwise the task is unlinked and kept.
+  - Tracked time is written to Notion when it changes.
+  - Sync runs on demand, or every 10 minutes while JourneyMan is open.
+- **Notion journal:** a database with a title and a date. JourneyMan adds a "From JourneyMan" section to that day's page, creating the page if needed. Both day journals and weekly reviews can be sent there.
+
+### Weekly review
+
+- **New Review view**, marked DUE in the sidebar once 7 days have passed. It has six steps:
+  1. Empty the inbox.
+  2. Check every project, from health.
+  3. Look back at last week: tracked time, deep work, tasks done, biggest miss.
+  4. Look ahead at next week's workload and the deadlines in the next 14 days.
+  5. Tidy up: archive completed projects and look at Someday projects.
+  6. Reflect: write notes.
+- **Finish review** logs it, keeps a streak (the phase 4 gate is three weeks in a row), and can add a summary to the Notion journal.
+
+### Mac activity → day journal (asked for during phase 3)
+
+- **`mac-agent/`:** a helper script, a launchd agent and install/uninstall scripts.
+  - Every 30 seconds it records the app in front, its window title and your idle time to `~/Documents/JourneyMan/activity/YYYY-MM-DD.jsonl`.
+  - Nothing is recorded while the screen is locked. Excluded apps are recorded as "Private". `TITLES=0` records app names only, and `PAUSED=1` stops recording.
+  - It uses only built-in macOS tools: bash, osascript with JavaScript for Automation, and ioreg.
+- **`js/activity.js`:**
+  - Samples are merged into sessions. Idle time, gaps and ignored apps are dropped.
+  - Each session is matched by your rules first, then by a task name (or its core, without "(…)" or what follows a colon), a project name or an area name in the window title.
+  - Output: a day summary, planned against actual, a plain-words journal entry, and moving unfinished tasks forward.
+  - Matched activity becomes time entries. They skip time already covered by timers, and re-running replaces rather than double counts.
+- Time entries can now belong to a project or area with no task. Reports, project totals and charts all count them.
+- **New Journal view:**
+  - A day timeline coloured by area, with tooltips.
+  - "Where the time went", and "Not matched yet" with **Assign…**, which adds a rule.
+  - Plan against reality, with a one-click "Move unfinished to tomorrow" and undo.
+  - An editable journal entry with notes: save it, add matched time to Time, or send it to Notion.
+  - Activity comes in from a connected folder (Chrome, re-read on open) or an imported `.jsonl` file (any browser).
+- **New Connections view:** bridge URL and key with a connection test, linked databases with their last result, the journal database, matching rules and ignored apps.
+
+### Fixes found in testing
+
+- Typing into a settings field re-drew the form and lost what you'd typed in the next field. Typed settings now save without a redraw.
+- A window title didn't match a task with a bracketed suffix. Matching now also tries the task name without it.
+- Assign put an area's projects before the area itself. The area now comes first.
+- Done tasks pulled from Notion were dated by the sync. They're now dated by Notion's edit time, so they don't count as done today.
+- Matched time with no area used Work's blue on the timeline. It now has its own grey and its own legend entry.
+
+### Checked
+
+- **Unit tests:** 49 in all. New ones cover mapping, page ↔ task conversion, a full two-way sync against an in-memory Notion (pull, push, create both ways, time write-back, archive, removal, no-op), a conflict, the API caller, writing the journal, sessions, matching, summaries, double-counting protection, planned against actual, the journal text and moving tasks forward. Also 3 tests for the bridge: key, origin, allowed routes and token.
+- **Browser run:** the real worker code ran on Node, with Notion replaced by an in-memory fake. The run covered connecting, looking up and linking a database, sync in both directions, setting the journal database, importing a day of activity, assigning, adding time, saving the journal and sending it to Notion, and finishing a review with the summary sent to Notion. No console errors.
+- **Mac helper:** syntax-checked. Its JavaScript was checked under Node with a simulated System Events. It hasn't run on a real Mac yet, because this machine is Linux.

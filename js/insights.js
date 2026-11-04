@@ -2,7 +2,7 @@
 // predictable, works offline and runs in Node tests. Every number comes with the reason behind it.
 
 import { addDays, daysBetween, formatDay } from './parse.js';
-import { weekStart, localDay } from './reports.js';
+import { weekStart, localDay, bucket } from './reports.js';
 
 const clamp = (x) => Math.max(0, Math.min(1, x));
 const DEFAULT_ESTIMATE = 30; // minutes assumed for a task with no estimate, in forecasts
@@ -28,6 +28,7 @@ export function lastActivity(store, projectId) {
     bump(t.doneAt);
     for (const e of store.state.entries) if (e.taskId === t.id) bump(e.end || e.start);
   }
+  for (const e of store.state.entries) if (!e.taskId && e.projectId === projectId) bump(e.end || e.start);
   return last;
 }
 export function idleDays(store, projectId) {
@@ -223,9 +224,7 @@ export function areaWeeks(store, weeks = 8) {
     const start = addDays(first, 7 * i);
     const byArea = new Map();
     for (const e of store.entriesBetween(start, addDays(start, 6))) {
-      const t = store.task(e.taskId);
-      const a = t && store.areaOf(t);
-      const k = a ? a.id : 'none';
+      const k = bucket(store, e).areaId || 'none';
       byArea.set(k, (byArea.get(k) || 0) + store.entryMinutes(e));
     }
     out.push({ start, byArea });

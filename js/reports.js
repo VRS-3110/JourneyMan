@@ -11,9 +11,9 @@ export function weekStart(iso) {
 
 /* Who an entry's time belongs to: its project, else its area, else nothing. */
 function bucket(store, e) {
-  const t = store.task(e.taskId);
-  const p = t && store.projectOf(t);
-  const a = t && store.areaOf(t);
+  const t = e.taskId ? store.task(e.taskId) : null;
+  const p = t ? store.projectOf(t) : e.projectId ? store.project(e.projectId) : null;
+  const a = t ? store.areaOf(t) : p ? store.area(p.areaId) : e.areaId ? store.area(e.areaId) : null;
   if (p) return { key: 'p:' + p.id, name: p.name, color: a ? a.color : null, areaId: a ? a.id : null };
   if (a) return { key: 'a:' + a.id, name: a.name, color: a.color, areaId: a.id };
   return { key: 'none', name: 'No project', color: null, areaId: null };
@@ -42,6 +42,8 @@ export function dayReport(store, day = store.today()) {
 }
 
 /* A week from Monday `start`: time per day split by area, per project, deep work and the biggest misses. */
+export { bucket };
+
 export function weekReport(store, start = weekStart(store.today())) {
   const end = addDays(start, 6);
   const entries = store.entriesBetween(start, end);
@@ -83,10 +85,11 @@ export function entriesCsv(store, from, to) {
   const list = (from ? store.entriesBetween(from, to) : store.state.entries.slice()).filter((e) => e.end).sort((a, b) => (a.start < b.start ? -1 : 1));
   const hm = (stamp) => { const d = new Date(stamp); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
   for (const e of list) {
-    const t = store.task(e.taskId);
-    const p = t && store.projectOf(t);
-    const a = t && store.areaOf(t);
-    rows.push([localDay(e.start), hm(e.start), hm(e.end), Math.round(store.entryMinutes(e)), t ? t.title : '(deleted task)', p ? p.name : '', a ? a.name : '', e.deep ? 'yes' : '', e.source, e.note || '']);
+    const t = e.taskId ? store.task(e.taskId) : null;
+    const b = bucket(store, e);
+    const p = t ? store.projectOf(t) : e.projectId ? store.project(e.projectId) : null;
+    const a = b.areaId ? store.area(b.areaId) : null;
+    rows.push([localDay(e.start), hm(e.start), hm(e.end), Math.round(store.entryMinutes(e)), t ? t.title : e.taskId ? '(deleted task)' : e.note || '', p ? p.name : '', a ? a.name : '', e.deep ? 'yes' : '', e.source, e.note || '']);
   }
   return rows.map((r) => r.map(csvCell).join(',')).join('\n') + '\n';
 }

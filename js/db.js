@@ -1,8 +1,8 @@
 // JourneyMan — IndexedDB storage. Everything stays in this browser on this Mac.
 
 const DB_NAME = 'journeyman';
-const DB_VERSION = 2; // 2 added time entries
-const STORES = ['areas', 'projects', 'tasks', 'entries', 'meta'];
+const DB_VERSION = 3; // 2 added time entries, 3 journals and Mac activity
+const STORES = ['areas', 'projects', 'tasks', 'entries', 'journals', 'activity', 'meta'];
 
 function open() {
   return new Promise((resolve, reject) => {
@@ -39,9 +39,9 @@ export async function openStorage() {
     db = await open();
   } catch (err) {
     console.warn('JourneyMan: storage unavailable, working in memory only.', err);
-    return { ok: false, error: err, data: {}, save() {}, remove() {}, async replaceAll() {} };
+    return { ok: false, error: err, data: {}, save() {}, remove() {}, async replaceAll() {}, async getMeta() { return null; } };
   }
-  const [areas, projects, tasks, entries, meta] = await Promise.all(STORES.map((s) => getAll(db, s)));
+  const [areas, projects, tasks, entries, journals, activity, meta] = await Promise.all(STORES.map((s) => getAll(db, s)));
   const settings = meta.find((m) => m.id === 'settings');
   if (settings) delete settings.id;
   const tombstones = (meta.find((m) => m.id === 'tombstones') || {}).list || [];
@@ -49,7 +49,17 @@ export async function openStorage() {
   const onError = (err) => console.error('JourneyMan: could not save.', err);
   return {
     ok: true,
-    data: { areas, projects, tasks, entries, tombstones, settings },
+    data: { areas, projects, tasks, entries, journals, activity, tombstones, settings },
+    /* Small values that aren't records, such as the activity folder handle. */
+    async getMeta(id) {
+      return new Promise((resolve) => {
+        try {
+          const req = db.transaction('meta').objectStore('meta').get(id);
+          req.onsuccess = () => resolve(req.result || null);
+          req.onerror = () => resolve(null);
+        } catch { resolve(null); }
+      });
+    },
     save(store, record) {
       try {
         const tx = db.transaction(store, 'readwrite');
@@ -68,7 +78,7 @@ export async function openStorage() {
     async replaceAll(data) {
       const tx = db.transaction(STORES, 'readwrite');
       for (const s of STORES) tx.objectStore(s).clear();
-      for (const s of ['areas', 'projects', 'tasks', 'entries']) for (const rec of data[s] || []) tx.objectStore(s).put(rec);
+      for (const s of ['areas', 'projects', 'tasks', 'entries', 'journals', 'activity']) for (const rec of data[s] || []) tx.objectStore(s).put(rec);
       tx.objectStore('meta').put({ id: 'settings', ...(data.settings || {}) });
       tx.objectStore('meta').put({ id: 'tombstones', list: data.tombstones || [] });
       await done(tx);

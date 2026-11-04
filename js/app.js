@@ -10,6 +10,12 @@ import { dayReport, parseDuration, weekStart, entriesCsv } from './reports.js';
 import { timeHead, timeBody, timeAfter, exportWeek } from './views/time.js';
 import { insightsHead, insightsBody, insightsAfter, nextUpPanel, healthBadge, projectHealth } from './views/insights.js';
 import { hideTip } from './charts.js';
+import { journalHead, journalBody, journalAfter, journalData, shiftDay, longDay } from './views/journal.js';
+import { reviewHead, reviewBody, reviewSummary, reviewDue } from './views/review.js';
+import { connectionsHead, bridgeSection, notionSection, activitySection } from './views/connections.js';
+import { parseActivity, toSessions, applyActivity, rollForward, suggestRule, journalText, targetName } from './activity.js';
+import { makeApi, syncLink, inspectDatabase, journalMap, notionId, writeJournal } from './notion.js';
+import { localDay } from './reports.js';
 
 const VIEWS = {
   inbox: { title: 'Inbox', icon: 'inbox' },
@@ -20,6 +26,9 @@ const VIEWS = {
   logbook: { title: 'Logbook', icon: 'logbook' },
   time: { title: 'Time', icon: 'time' },
   insights: { title: 'Insights', icon: 'insights' },
+  journal: { title: 'Journal', icon: 'note' },
+  review: { title: 'Review', icon: 'review' },
+  connections: { title: 'Connections', icon: 'link' },
 };
 const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const DAYS_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -51,6 +60,7 @@ function onRoute() {
   ui.detail = !!pending;
   renderAll(true);
   $('#main').scrollTop = 0;
+  if (ui.route.view === 'journal') refreshActivity();
 }
 
 /* Where quick add puts a task that names no project, area or date. */
@@ -72,7 +82,8 @@ function renderAll(full) {
   renderNav();
   if (full) renderHead();
   renderMeta();
-  renderBody();
+  const typingInBody = $('#view-body').contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  if (full || !(typingInBody && ['journal', 'review', 'connections'].includes(ui.route.view))) renderBody();
   renderDetail(full);
   renderTimer();
   if (full) {
@@ -90,9 +101,9 @@ function renderNav() {
   const late = store.todayList().some((t) => (t.when && t.when < today) || (t.deadline && t.deadline < today));
   const item = (view, count, cls = '') => {
     const v = VIEWS[view], active = r.view === view;
-    return `<a href="#${view}" class="nav-item${active ? ' active' : ''}"${active ? ' aria-current="page"' : ''}>${icon(v.icon)}<span>${v.title}</span>${count ? `<b class="count ${cls}">${count}</b>` : ''}</a>`;
+    return `<a href="#${view}" class="nav-item${active ? ' active' : ''}"${active ? ' aria-current="page"' : ''}>${icon(v.icon)}<span>${v.title}</span>${count ? `<b class="count ${cls}"${count === 'due' ? ' title="Your weekly review is due"' : ''}>${count}</b>` : ''}</a>`;
   };
-  $('#nav-views').innerHTML = item('inbox', c.inbox) + item('today', c.today, late ? 'late' : '') + item('upcoming') + item('anytime') + item('projects') + item('logbook') + item('time') + item('insights');
+  $('#nav-views').innerHTML = item('inbox', c.inbox) + item('today', c.today, late ? 'late' : '') + item('upcoming') + item('anytime') + item('projects') + item('logbook') + item('time') + item('insights') + item('journal') + item('review', reviewDue(store) ? 'due' : 0, 'due');
 
   const projLink = (p, color) => {
     const s = store.projectStats(p.id), active = r.view === 'project' && r.id === p.id;
@@ -146,6 +157,12 @@ function renderHead() {
     head.innerHTML = timeHead(store, ui);
   } else if (r.view === 'insights') {
     head.innerHTML = insightsHead();
+  } else if (r.view === 'journal') {
+    head.innerHTML = journalHead(store, ui, { folder: ui.folder });
+  } else if (r.view === 'review') {
+    head.innerHTML = reviewHead(store);
+  } else if (r.view === 'connections') {
+    head.innerHTML = connectionsHead(connectionsExtra());
   } else {
     const v = VIEWS[r.view];
     const sub = r.view === 'today' ? `<p class="view-sub">${longDate(store.today())}</p>` : '';
@@ -279,6 +296,21 @@ function renderBody() {
       hideTip();
       body.innerHTML = insightsBody(store);
       insightsAfter(store, { openTask });
+      return;
+    }
+    case 'journal': {
+      hideTip();
+      ui.aiReady = aiReady();
+      body.innerHTML = journalBody(store, ui, { notion: !!(store.state.settings.notion.journal && bridgeReady()) });
+      journalAfter(store, ui);
+      return;
+    }
+    case 'review': {
+      body.innerHTML = reviewBody(store, { notion: !!(store.state.settings.notion.journal && bridgeReady()) });
+      return;
+    }
+    case 'connections': {
+      body.innerHTML = bridgeSection(store, ui) + notionSection(store, ui) + activitySection(store, ui) + extraConnections();
       return;
     }
     case 'upcoming': {
@@ -528,6 +560,260 @@ function openTask(id) {
 }
 function aiReady() { return false; }
 function onAi() {}
+
+/* ---------- phase 4: Notion bridge, journal, review ---------- */
+const bridgeReady = () => !!(store.state.settings.notion.workerUrl && store.state.settings.notion.appKey);
+const notionApi = () => makeApi(store.state.settings.notion);
+function connectionsExtra() { return ''; }
+function extraConnections() { return ''; }
+
+function setNotion(fields) {
+  store.updateSettings({ notion: { ...store.state.settings.notion, ...fields } });
+}
+
+/* Runs the two-way sync for some or all linked databases. */
+async function runNotionSync(indexes = null, { quiet = false } = {}) {
+  if (ui.syncing || !bridgeReady()) return;
+  const n = store.state.settings.notion;
+  const links = n.links.map((l) => ({ ...l, map: { ...l.map } }));
+  const which = indexes ?? links.map((_, i) => i);
+  if (!which.length) return;
+  ui.syncing = true;
+  if (!quiet) toast('Syncing with Notion…');
+  const api = notionApi();
+  const totals = { changes: 0, errors: 0 };
+  for (const i of which) {
+    const link = links[i];
+    if (!store.project(link.projectId)) { link.lastError = 'The project was deleted.'; totals.errors++; continue; }
+    try {
+      const r = await syncLink(store, link, api);
+      link.lastError = null;
+      totals.changes += r.pulled + r.pushed + r.created + r.createdInNotion + r.archived + r.removed + r.time;
+    } catch (err) {
+      link.lastError = err.message;
+      totals.errors++;
+    }
+  }
+  ui.syncing = false;
+  setNotion({ links });
+  if (!quiet || totals.errors) toast(totals.errors ? `Notion sync had ${totals.errors} problem${totals.errors === 1 ? '' : 's'}. See Connections.` : totals.changes ? `Synced with Notion: ${totals.changes} change${totals.changes === 1 ? '' : 's'}` : 'Notion is already in step');
+}
+
+/* ---------- Mac activity ---------- */
+async function loadFolder() {
+  const rec = await storage.getMeta('activityDir');
+  ui.folderHandle = rec ? rec.handle : null;
+  ui.folder = null;
+  if (ui.folderHandle && ui.folderHandle.queryPermission) {
+    try { ui.folder = await ui.folderHandle.queryPermission({ mode: 'read' }); } catch { ui.folder = null; }
+  }
+}
+async function readActivityFile(handle, day) {
+  try {
+    const fh = await handle.getFileHandle(`${day}.jsonl`);
+    const text = await (await fh.getFile()).text();
+    const sessions = toSessions(parseActivity(text), { ignore: store.state.settings.activityIgnore || [] });
+    store.saveActivity(day, sessions, 'folder');
+    return true;
+  } catch { return false; }
+}
+/* Re-reads the open day from the connected folder (Chrome). */
+async function refreshActivity() {
+  if (ui.folder !== 'granted' || !ui.folderHandle) return;
+  await readActivityFile(ui.folderHandle, ui.journalDay || store.today());
+}
+async function connectFolder(reconnect) {
+  try {
+    if (reconnect && ui.folderHandle) {
+      ui.folder = await ui.folderHandle.requestPermission({ mode: 'read' });
+    } else {
+      const handle = await window.showDirectoryPicker({ id: 'journeyman-activity', mode: 'read', startIn: 'documents' });
+      ui.folderHandle = handle;
+      ui.folder = 'granted';
+      storage.save('meta', { id: 'activityDir', handle });
+    }
+  } catch { return; }
+  renderHead();
+  await refreshActivity();
+  renderBody();
+  if (ui.folder === 'granted') toast('Activity folder connected');
+}
+/* Imports one or more .jsonl files; samples are split by local day. */
+async function importActivity(files) {
+  const byDay = new Map();
+  for (const f of files) {
+    for (const smp of parseActivity(await f.text())) {
+      const d = localDay(smp.t);
+      if (!byDay.has(d)) byDay.set(d, []);
+      byDay.get(d).push(smp);
+    }
+  }
+  if (!byDay.size) { toast('No activity found in that file.'); return; }
+  for (const [day, samples] of byDay) {
+    samples.sort((a, b) => (a.t < b.t ? -1 : 1));
+    store.saveActivity(day, toSessions(samples, { ignore: store.state.settings.activityIgnore || [] }), 'import');
+  }
+  const days = [...byDay.keys()].sort();
+  ui.journalDay = days[days.length - 1] > store.today() ? store.today() : days[days.length - 1];
+  renderAll(true);
+  toast(`Imported activity for ${days.length} day${days.length === 1 ? '' : 's'}`);
+}
+
+/* Assign unmatched time: pick where it belongs, and a rule remembers it. */
+function assignSource(sample) {
+  return (q) => {
+    const m = match(q);
+    const items = [];
+    for (const a of sortedAreas()) {
+      // The area itself first, then its projects.
+      if (m(a.name)) items.push({ label: a.name, sub: 'Area', color: areaColor(a), run: () => addRule(sample, { kind: 'area', id: a.id }) });
+      for (const p of store.state.projects.filter((x) => x.areaId === a.id && x.status === 'active')) {
+        if (m(p.name) || m(a.name)) items.push({ label: p.name, sub: a.name, color: areaColor(a), run: () => addRule(sample, { kind: 'project', id: p.id }) });
+      }
+    }
+    for (const p of store.state.projects.filter((x) => !x.areaId && x.status === 'active')) if (m(p.name)) items.push({ label: p.name, sub: 'Project', run: () => addRule(sample, { kind: 'project', id: p.id }) });
+    if (q.trim()) for (const t of store.state.tasks.filter((x) => !x.done)) if (m(t.title)) items.push({ label: t.title, sub: 'Task', icon: 'check', run: () => addRule(sample, { kind: 'task', id: t.id }) });
+    return items;
+  };
+}
+function addRule(sample, target) {
+  const rule = { id: Math.random().toString(36).slice(2), ...suggestRule(sample), target };
+  store.updateSettings({ activityRules: [...(store.state.settings.activityRules || []), rule] });
+  toast(`${rule.field === 'app' ? 'App' : 'Title'} “${rule.contains}” → ${targetName(store, target)}`, () => {
+    store.updateSettings({ activityRules: store.state.settings.activityRules.filter((r) => r.id !== rule.id) });
+  });
+}
+
+async function journalAction(act, el) {
+  const day = ui.journalDay || store.today();
+  const data = journalData(store, day);
+  const text = () => $('#journal-text')?.value || '';
+  const notes = () => $('#journal-notes')?.value || '';
+  const stats = { active: data.summary.total, matched: data.summary.matchedMinutes, tracked: data.report.total, done: data.report.done.length };
+  if (act === 'connect') return connectFolder(false);
+  if (act === 'reconnect') return connectFolder(true);
+  if (act === 'apply') {
+    const added = applyActivity(store, day, data.summary.sessions);
+    toast(added ? `Added ${hours(added)} of matched activity to Time` : 'Nothing new to add. Timers already cover it.');
+  } else if (act === 'regen') {
+    $('#journal-text').value = journalText(store, day, data.summary, data.plan, data.report);
+  } else if (act === 'save') {
+    store.saveJournal(day, { text: text(), notes: notes(), stats });
+    toast('Journal saved');
+  } else if (act === 'notion') {
+    const j = store.state.settings.notion.journal;
+    store.saveJournal(day, { text: text(), notes: notes(), stats });
+    el.disabled = true;
+    try {
+      const res = await writeJournal(notionApi(), j, { day, title: longDay(day), text: text(), notes: notes() });
+      store.saveJournal(day, { notionPageId: res.pageId });
+      toast(res.created ? 'Added a new page to your Notion journal' : 'Added to that day’s page in your Notion journal');
+    } catch (err) { toast(`Notion: ${err.message}`); } finally { el.disabled = false; }
+  } else if (act === 'roll') {
+    const tomorrow = addDays(store.today(), 1);
+    const before = data.plan.filter((p) => p.state !== 'done').map((p) => ({ ...p.task }));
+    const n = rollForward(store, data.plan, tomorrow);
+    toast(`Moved ${n} task${n === 1 ? '' : 's'} to tomorrow`, () => before.forEach((t) => store.restore('task', t)));
+  } else if (act === 'ai-journal') {
+    onAi('journal');
+  }
+}
+
+async function connectionsAction(act, el) {
+  const n = store.state.settings.notion;
+  if (act === 'test-bridge') {
+    ui.bridgeHealth = null;
+    try {
+      const base = n.workerUrl.replace(/\/+$/, '');
+      const res = await fetch(`${base}/health`, { headers: { authorization: `Bearer ${n.appKey}` } });
+      const data = await res.json().catch(() => ({}));
+      ui.bridgeHealth = res.ok ? data : { error: data.error || `The bridge answered ${res.status}` };
+    } catch { ui.bridgeHealth = { error: 'Could not reach the bridge. Check the URL, and that ALLOWED_ORIGINS includes this page.' }; }
+    renderBody();
+  } else if (act === 'link-inspect') {
+    const url = $('#link-url').value.trim();
+    if (!notionId(url)) { toast('Paste the link of a Notion database (open it as a full page, then Share → Copy link).'); return; }
+    el.disabled = true;
+    try { ui.notionDraft = await inspectDatabase(notionApi(), url); } catch (err) { toast(`Notion: ${err.message}`); } finally { el.disabled = false; }
+    renderBody();
+  } else if (act === 'link-cancel') {
+    ui.notionDraft = null;
+    renderBody();
+  } else if (act === 'link-save') {
+    const d = ui.notionDraft;
+    if (!d.map.title) { toast('Choose which property is the task name.'); return; }
+    let projectId = $('#link-project').value;
+    if (!projectId) projectId = store.addProject(d.title, { notionUrl: d.url }).id;
+    else if (!store.project(projectId).notionUrl && d.url) store.updateProject(projectId, { notionUrl: d.url });
+    const link = { id: Math.random().toString(36).slice(2), databaseId: d.id, title: d.title, url: d.url, projectId, map: d.map, lastSync: null };
+    ui.notionDraft = null;
+    setNotion({ links: [...n.links, link] });
+    await runNotionSync([store.state.settings.notion.links.length - 1]);
+  } else if (act === 'sync-all') {
+    await runNotionSync();
+  } else if (act === 'sync-one') {
+    await runNotionSync([Number(el.dataset.i)]);
+  } else if (act === 'unlink') {
+    const l = n.links[Number(el.dataset.i)];
+    if (!confirm(`Stop syncing “${l.title}”? Tasks stay in JourneyMan and pages stay in Notion.`)) return;
+    setNotion({ links: n.links.filter((_, i) => i !== Number(el.dataset.i)) });
+  } else if (act === 'journal-set') {
+    const url = $('#journal-url').value.trim();
+    const id = notionId(url);
+    if (!id) { toast('Paste the link of your journal database.'); return; }
+    try {
+      const db = await notionApi()('GET', `databases/${id}`);
+      const jm = journalMap(db);
+      if (!jm.titleProp) throw new Error('That database has no title property.');
+      setNotion({ journal: { databaseId: id, title: (db.title || []).map((x) => x.plain_text).join('') || 'Journal', ...jm } });
+      toast(jm.dateProp ? 'Journal database set' : 'Journal set. Add a date property in Notion so each day gets one page.');
+    } catch (err) { toast(`Notion: ${err.message}`); }
+  } else if (act === 'journal-clear') {
+    setNotion({ journal: null });
+  } else if (act === 'rule-del') {
+    const rules = [...store.state.settings.activityRules];
+    const [gone] = rules.splice(Number(el.dataset.i), 1);
+    store.updateSettings({ activityRules: rules });
+    toast('Rule removed', () => store.updateSettings({ activityRules: [...store.state.settings.activityRules, gone] }));
+  }
+}
+
+async function reviewAction(act, el) {
+  if (act === 'archive') {
+    const done = store.state.projects.filter((p) => p.status === 'done');
+    for (const p of done) store.updateProject(p.id, { status: 'archived' });
+    toast(`Archived ${done.length} project${done.length === 1 ? '' : 's'}`, () => done.forEach((p) => store.updateProject(p.id, { status: 'done' })));
+  } else if (act === 'finish') {
+    const notes = $('#review-notes').value.trim();
+    const summary = reviewSummary(store, notes);
+    const toNotion = $('#review-notion')?.checked;
+    store.updateSettings({ reviews: [...(store.state.settings.reviews || []), { date: store.today(), notes, summary }] });
+    toast('Review done. See you next week.');
+    if (toNotion) {
+      el.disabled = true;
+      try {
+        await writeJournal(notionApi(), store.state.settings.notion.journal, { day: store.today(), title: `${longDay(store.today())} · weekly review`, text: summary });
+        toast('Review added to your Notion journal');
+      } catch (err) { toast(`Notion: ${err.message}`); }
+    }
+    renderAll(true);
+  }
+}
+
+function onSettingInput(el) {
+  const path = el.dataset.set;
+  if (path === 'activityIgnore') { store.updateSettings({ activityIgnore: el.value.split(',').map((x) => x.trim()).filter(Boolean) }, { silent: true }); return; }
+  const [group, key] = path.split('.');
+  const value = el.type === 'checkbox' ? el.checked : el.value.trim();
+  store.updateSettings({ [group]: { ...store.state.settings[group], [key]: value } }, { silent: true });
+  if (path === 'notion.autoSync') scheduleAutoSync();
+}
+
+let autoTimer = 0;
+function scheduleAutoSync() {
+  clearInterval(autoTimer);
+  if (store.state.settings.notion.autoSync && bridgeReady()) autoTimer = setInterval(() => runNotionSync(null, { quiet: true }), 10 * 60_000);
+}
 
 /* ---------- actions ---------- */
 function select(id, openDetail) {
@@ -829,6 +1115,7 @@ function bind() {
   $('#open-search').addEventListener('click', () => openPalette('Go to a list, area, project or task…', gotoSource));
   $('#open-help').addEventListener('click', () => $('#help').showModal());
   $('#open-settings').addEventListener('click', openSettings);
+  $('#open-connections').addEventListener('click', () => go('connections'));
   $('#set-days').addEventListener('change', (e) => {
     const d = Number(e.target.value);
     if (d >= 1 && d <= 7) store.updateSettings({ daysPerWeek: d });
@@ -864,6 +1151,24 @@ function bind() {
       return;
     }
     if (e.target.closest('[data-ai]')) { onAi(e.target.closest('[data-ai]').dataset.ai); return; }
+    const act = e.target.closest('[data-act]');
+    if (act) {
+      const v = ui.route.view;
+      if (v === 'journal') journalAction(act.dataset.act, act);
+      else if (v === 'connections') connectionsAction(act.dataset.act, act);
+      else if (v === 'review') reviewAction(act.dataset.act, act);
+      return;
+    }
+    const asg = e.target.closest('[data-assign]');
+    if (asg) {
+      const u = journalData(store, ui.journalDay || store.today()).summary.unmatched[Number(asg.dataset.assign)];
+      if (u) openPalette(`Where did “${u.app}${u.title ? ': ' + u.title.slice(0, 40) : ''}” belong?`, assignSource(u.sample));
+      return;
+    }
+    const op = e.target.closest('[data-open]');
+    if (op) { openTask(op.dataset.open); return; }
+    const gd = e.target.closest('[data-goday]');
+    if (gd) { ui.journalDay = gd.dataset.goday; renderAll(true); refreshActivity(); return; }
     const row = e.target.closest('.task');
     if (!row) return;
     const id = row.dataset.id;
@@ -875,6 +1180,24 @@ function bind() {
     else if (action === 'keep') { store.updateTask(id, { inbox: false }); toast('Kept in Anytime'); }
     else select(id, true);
   });
+  const onBodyInput = (e) => {
+    const el = e.target;
+    if (el.dataset.set) { onSettingInput(el); return; }
+    if (el.dataset.map && ui.notionDraft) {
+      const d = ui.notionDraft;
+      d.map[el.dataset.map] = el.value || null;
+      if (el.dataset.map === 'status') {
+        const prop = d.properties[el.value];
+        d.map.statusType = prop ? prop.type : null;
+        const opts = prop && prop.type !== 'checkbox' ? ((prop.status || prop.select || {}).options || []).map((o) => o.name) : [];
+        d.map.doneValue = opts.find((o) => /done|complete/i.test(o)) || null;
+        d.map.todoValue = opts.find((o) => /not started|to ?do|todo/i.test(o)) || opts[0] || null;
+        renderBody();
+      }
+    }
+  };
+  $('#view-body').addEventListener('change', onBodyInput);
+  $('#view-body').addEventListener('input', (e) => { if (e.target.dataset.set && e.target.type !== 'checkbox') onSettingInput(e.target); });
   $('#view-body').addEventListener('toggle', (e) => {
     const d = e.target.closest('details[data-group]');
     if (d) ui.openGroups[d.dataset.group] = d.open;
@@ -902,8 +1225,15 @@ function bind() {
     }
   };
   head.addEventListener('input', onHead);
+  head.addEventListener('change', (e) => {
+    if (e.target.id === 'activity-file' && e.target.files.length) { importActivity([...e.target.files]); e.target.value = ''; }
+  });
   head.addEventListener('change', onHead);
   head.addEventListener('click', (e) => {
+    const dy = e.target.closest('[data-day]');
+    if (dy) { shiftDay(store, ui, Number(dy.dataset.day)); renderAll(true); refreshActivity(); return; }
+    const hact = e.target.closest('[data-act]');
+    if (hact && ui.route.view === 'journal') { journalAction(hact.dataset.act, hact); return; }
     const wk = e.target.closest('[data-week]');
     if (wk) {
       const cur = ui.week || weekStart(store.today());
@@ -1013,7 +1343,11 @@ function bind() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => { if (['time', 'insights'].includes(ui.route.view)) renderBody(); }, 150);
   });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkDay(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    checkDay();
+    if (ui.route.view === 'journal') refreshActivity();
+  });
   setInterval(checkDay, 60_000);
 }
 
@@ -1058,7 +1392,7 @@ function onKey(e) {
   if (gPending) {
     clearTimeout(gPending);
     gPending = 0;
-    const dest = { i: 'inbox', t: 'today', u: 'upcoming', a: 'anytime', p: 'projects', l: 'logbook', m: 'time', s: 'insights' }[e.key.toLowerCase()];
+    const dest = { i: 'inbox', t: 'today', u: 'upcoming', a: 'anytime', p: 'projects', l: 'logbook', m: 'time', s: 'insights', j: 'journal', r: 'review', c: 'connections' }[e.key.toLowerCase()];
     if (dest) { e.preventDefault(); go(dest); }
     return;
   }
@@ -1093,8 +1427,11 @@ async function boot() {
   ui.lastDay = store.today();
   setInterval(tick, 1000);
   store.subscribe(() => renderAll(false));
+  await loadFolder();
   bind();
   onRoute();
+  scheduleAutoSync();
+  if (store.state.settings.notion.autoSync) runNotionSync(null, { quiet: true });
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }

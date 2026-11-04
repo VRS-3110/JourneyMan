@@ -13,7 +13,10 @@ export const colorVar = (slot) => (/^c[1-8]$/.test(slot || '') ? `var(--${slot})
 
 export const DEFAULT_SETTINGS = {
   hoursPerDay: 6, daysPerWeek: 5, adjustEstimates: true, seeded: false,
-  reviews: [], // ISO dates of finished weekly reviews
+  reviews: [], // finished weekly reviews: { date, notes, tracked, done }
+  activityRules: [], // { id, field: 'app' | 'title', contains, target: { kind: 'task' | 'project' | 'area', id } }
+  activityIgnore: ['loginwindow', 'ScreenSaverEngine', 'Private'],
+  notion: { workerUrl: '', appKey: '', links: [], journal: null, autoSync: false },
 };
 
 let lastOrder = 0;
@@ -27,12 +30,12 @@ export function createStore(persist = {}) {
   const remove = persist.remove || (() => {});
   const now = persist.now || (() => new Date());
 
-  const state = { areas: [], projects: [], tasks: [], entries: [], tombstones: [], settings: { ...DEFAULT_SETTINGS } };
+  const state = { areas: [], projects: [], tasks: [], entries: [], journals: [], activity: [], tombstones: [], settings: { ...DEFAULT_SETTINGS } };
   const listeners = new Set();
   const emit = () => listeners.forEach((fn) => fn());
   const today = () => todayISO(now());
   const stamp = () => now().toISOString();
-  const kindOf = { area: 'areas', project: 'projects', task: 'tasks', entry: 'entries' };
+  const kindOf = { area: 'areas', project: 'projects', task: 'tasks', entry: 'entries', journal: 'journals', activity: 'activity' };
 
   /* Every change is stamped with updatedAt, which Notion sync and device sync use to decide who wins. */
   function put(kind, rec, { touch = true } = {}) {
@@ -47,10 +50,13 @@ export function createStore(persist = {}) {
   function drop(kind, id, { tombstone = true } = {}) {
     const list = state[kindOf[kind]];
     const i = list.findIndex((x) => x.id === id);
+    const rec = i >= 0 ? list[i] : null;
     if (i >= 0) list.splice(i, 1);
     remove(kindOf[kind], id);
     if (tombstone) {
-      state.tombstones = state.tombstones.filter((t) => t.id !== id).concat({ id, kind, deletedAt: stamp() }).slice(-2000);
+      const t = { id, kind, deletedAt: stamp() };
+      if (rec && rec.notionPageId) t.notionPageId = rec.notionPageId; // so the Notion bridge can archive the page
+      state.tombstones = state.tombstones.filter((x) => x.id !== id).concat(t).slice(-2000);
       save('meta', { id: 'tombstones', list: state.tombstones });
     }
   }
@@ -65,12 +71,19 @@ export function createStore(persist = {}) {
       state.projects = data.projects || [];
       state.tasks = data.tasks || [];
       state.entries = data.entries || [];
+      state.journals = data.journals || [];
+      state.activity = data.activity || [];
       state.tombstones = data.tombstones || [];
       state.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
+      state.settings.notion = { ...DEFAULT_SETTINGS.notion, ...(state.settings.notion || {}) };
       emit();
     },
     snapshot() {
-      return JSON.parse(JSON.stringify({ app: 'JourneyMan', version: 2, exportedAt: stamp(), ...state }));
+      const copy = JSON.parse(JSON.stringify({ app: 'JourneyMan', version: 3, exportedAt: stamp(), ...state }));
+      if (copy.settings.notion) copy.settings.notion.appKey = ''; // keys stay on this Mac
+      if (copy.settings.sync) copy.settings.sync = { ...copy.settings.sync, session: null };
+      if (copy.settings.ai) copy.settings.ai = { ...copy.settings.ai, appKey: '' };
+      return copy;
     },
     /* Writes a record that came from elsewhere (Notion, another device) without re-stamping it. */
     applyRemote(kind, rec) {
@@ -306,10 +319,42 @@ export function createStore(persist = {}) {
       return m ? minutes * m : minutes;
     },
 
-    updateSettings(fields) {
+    /* ---------- journal and Mac activity ---------- */
+    journal: (day) => state.journals.find((j) => j.day === day) || null,
+    saveJournal(day, fields) {
+      const cur = store.journal(day);
+      const j = put('journal', { id: cur ? cur.id : uid(), day, text: '', notes: '', stats: null, createdAt: cur ? cur.createdAt : stamp(), ...(cur || {}), ...fields });
+      emit();
+      return j;
+    },
+    activityDay: (day) => state.activity.find((a) => a.id === day) || null,
+    /* Keeps the merged sessions of one day (not raw samples), and only the last 60 days. */
+    saveActivity(day, sessions, source = 'import') {
+      put('activity', { id: day, sessions, source, importedAt: stamp() });
+      const keep = [...state.activity].sort((a, b) => (a.id < b.id ? 1 : -1)).slice(60);
+      for (const old of keep) drop('activity', old.id, { tombstone: false });
+      emit();
+    },
+    /* Time logged against a project or area, with no task (from Mac activity). */
+    addEntry(fields) {
+      const e = put('entry', { id: uid(), taskId: null, projectId: null, areaId: null, start: stamp(), end: stamp(), deep: false, source: 'manual', note: '', ...fields });
+      emit();
+      return e;
+    },
+    setTombstones(list) {
+      state.tombstones = list;
+      save('meta', { id: 'tombstones', list });
+    },
+    removeEntries(pred) {
+      for (const e of state.entries.filter(pred)) drop('entry', e.id);
+      emit();
+    },
+
+    /* `silent` saves without re-rendering, for fields being typed into. */
+    updateSettings(fields, { silent = false } = {}) {
       state.settings = { ...state.settings, ...fields };
       save('meta', { id: 'settings', ...state.settings });
-      emit();
+      if (!silent) emit();
     },
 
     /* ---------- views ---------- */
@@ -364,7 +409,8 @@ export function createStore(persist = {}) {
       const estimateLeft = open.reduce((s, t) => s + (t.estimate || 0), 0);
       const unestimated = open.filter((t) => !t.estimate).length;
       const daysLeft = p && p.deadline ? daysBetween(today(), p.deadline) : null;
-      const tracked = [...open, ...done].reduce((s, t) => s + store.tracked(t.id), 0);
+      const tracked = [...open, ...done].reduce((s, t) => s + store.tracked(t.id), 0)
+        + state.entries.filter((e) => !e.taskId && e.projectId === id).reduce((s, e) => s + store.entryMinutes(e), 0);
       return { open: open.length, done: done.length, total, progress: total ? done.length / total : 0, estimateLeft, unestimated, daysLeft, tracked };
     },
     /* Planned minutes for today against the hours you said you have. */

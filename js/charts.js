@@ -246,3 +246,39 @@ export function matrix(container, { points, xLabel, yLabel, quadrants, title }) 
   }
   container.appendChild(svg);
 }
+
+/*
+  A day timeline: one row of segments placed by clock time, hour ticks below.
+  segments: [{ start, end (ISO), color, label, sub }]
+*/
+export function timeline(container, { segments, title }) {
+  container.replaceChildren();
+  container.classList.add('chart');
+  if (!segments.length) return;
+  const width = Math.max(container.clientWidth || 640, 280);
+  const t0 = new Date(segments[0].start), t1 = new Date(segments[segments.length - 1].end);
+  const from = new Date(t0.getFullYear(), t0.getMonth(), t0.getDate(), t0.getHours()).getTime();
+  const to = new Date(t1.getFullYear(), t1.getMonth(), t1.getDate(), t1.getHours() + 1).getTime();
+  const pad = { left: 8, right: 8 };
+  const X = (ms) => pad.left + ((ms - from) / (to - from)) * (width - pad.left - pad.right);
+  const height = 62;
+  const svg = el('svg', { viewBox: `0 0 ${width} ${height}`, width, height, role: 'img', 'aria-label': title || 'Timeline' });
+  el('rect', { x: pad.left, y: 8, width: width - pad.left - pad.right, height: 26, rx: 5, class: 'track' }, svg);
+  for (const s of segments) {
+    const a = X(new Date(s.start).getTime()), b = X(new Date(s.end).getTime());
+    const w = Math.max(b - a - 1, 1.5); // 1px surface gap between neighbours
+    const g = el('g', { class: 'col', 'aria-label': `${s.label}: ${s.sub}` }, svg);
+    el('rect', { x: a, y: 8, width: w, height: 26, fill: s.color, class: 'seg' }, g);
+    el('rect', { x: a - 2, y: 2, width: w + 4, height: 38, class: 'hit' }, g);
+    hover(g, () => showTip(g, s.label, [{ value: s.sub, label: '', color: s.color }]));
+  }
+  const hours = (to - from) / 3_600_000;
+  const every = hours > 12 ? 3 : hours > 6 ? 2 : 1;
+  for (let ms = from; ms <= to; ms += 3_600_000 * every) {
+    const d = new Date(ms);
+    const h = d.getHours();
+    el('line', { x1: X(ms), x2: X(ms), y1: 36, y2: 40, class: 'baseline' }, svg);
+    text(svg, { x: X(ms), y: 54, 'text-anchor': 'middle', class: 'xsub' }, h === 0 ? '12am' : h < 12 ? `${h}am` : h === 12 ? '12pm' : `${h - 12}pm`);
+  }
+  container.appendChild(svg);
+}
