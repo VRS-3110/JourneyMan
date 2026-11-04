@@ -93,6 +93,25 @@ test('full quick-add lines', () => {
   assert.equal(r.when, null, 'Tom is a name, not tomorrow');
 });
 
+test('two date phrases: the last one sets the date', () => {
+  let r = parse('Plan next week #thesis ~20m sun');
+  assert.equal(r.title, 'Plan next week');
+  assert.equal(r.when, '2026-11-08');
+  r = parse('Meeting 3pm tomorrow');
+  assert.equal(r.title, 'Meeting');
+  assert.equal(r.when, '2026-11-05');
+  assert.equal(r.time, '15:00');
+  r = parse('Call mom tomorrow about next week');
+  assert.equal(r.title, 'Call mom about next week');
+  assert.equal(r.when, '2026-11-05');
+  r = parse('Prep for monday meeting tomorrow');
+  assert.equal(r.title, 'Prep for monday meeting');
+  assert.equal(r.when, '2026-11-05');
+  r = parse('Review today notes on fri');
+  assert.equal(r.title, 'Review today notes');
+  assert.equal(r.when, '2026-11-06');
+});
+
 test('project matching by unique prefix', () => {
   assert.equal(parse('x #thes').projectId, 'p2');
   assert.equal(parse('x #Website-Redesign').projectId, 'p1');

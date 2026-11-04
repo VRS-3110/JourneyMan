@@ -138,6 +138,9 @@ export function findByName(list, name) {
   return starts.length === 1 ? starts[0] : null;
 }
 
+/* A date right after one of these words is part of the task's text. */
+const TEXT_BEFORE = new Set(['about', 'for', 'of', 'the', 'this', 'last', 'from', 'since', 'until', 'till', 'before', 'after', 'during', 're']);
+
 const TAG = /^[#@][\p{L}][\p{L}\p{N}_-]*$/u;
 
 /* ---------- Notion links ---------- */
@@ -172,6 +175,7 @@ export function parseQuickAdd(text, { today = todayISO(), projects = [], areas =
     when: null, time: null, deadline: null, estimate: null, priority: 0, notionUrl: null,
   };
   const keep = [];
+  let datePhrase = null; // the words that set "when", in case a later date replaces them
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
     const low = tok.toLowerCase();
@@ -198,20 +202,32 @@ export function parseQuickAdd(text, { today = todayISO(), projects = [], areas =
       const d = parseDateAt(tokens, i + 1, today);
       if (d) { out.deadline = d.iso; i += d.used; continue; }
     }
-    const d = parseDateAt(tokens, i, today);
-    if (d && !out.when) {
-      out.when = d.iso;
+    // A date phrase, with an optional "on"/"at" before it and a time after it.
+    // If a line has two, the last one wins and the earlier one goes back into the title:
+    // "Plan next week sun" → "Plan next week", on Sunday.
+    const prefixed = (low === 'on' || low === 'at') && i + 1 < tokens.length && parseDateAt(tokens, i + 1, today);
+    const start = prefixed ? i + 1 : i;
+    const d = prefixed || parseDateAt(tokens, i, today);
+    if (d && !prefixed && TEXT_BEFORE.has((tokens[i - 1] || '').toLowerCase())) {
+      // "about next week", "for monday": part of what the task says, not when to do it
+      keep.push(...tokens.slice(i, i + d.used));
       i += d.used - 1;
-      const t = parseTime(tokens[i + 1]);
-      if (t) { out.time = t; i += 1; }
       continue;
     }
-    // "on" / "at" before a date or time is part of the phrase, not the title
-    if ((low === 'on' || low === 'at') && i + 1 < tokens.length) {
-      const next = parseDateAt(tokens, i + 1, today);
-      if (next && !out.when) continue;
-      if (parseTime(tokens[i + 1]) && !out.time) continue;
+    if (d) {
+      const words = tokens.slice(i, start + d.used);
+      i = start + d.used - 1;
+      const t = parseTime(tokens[i + 1]);
+      if (t) { words.push(tokens[i + 1]); i += 1; }
+      const loneTime = !datePhrase && out.time; // "Meeting 3pm tomorrow": the time still applies
+      if (datePhrase) keep.splice(datePhrase.at, 0, datePhrase.words.join(' '));
+      datePhrase = { at: keep.length, words };
+      out.when = d.iso;
+      out.time = t || loneTime || null;
+      continue;
     }
+    // "at" before a time is part of the phrase, not the title
+    if (low === 'at' && parseTime(tokens[i + 1]) && !out.time) continue;
     const t = parseTime(tok);
     if (t && !out.time) {
       out.time = t;
