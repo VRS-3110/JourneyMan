@@ -1,29 +1,13 @@
 // JourneyMan — the interface. Data and rules live in model.js; storage in db.js.
 
-import { createStore, seed, AREA_COLORS } from './model.js';
+import { createStore, seed, AREA_COLORS, AREA_COLOR_NAMES, colorVar } from './model.js';
 import { openStorage } from './db.js';
 import { parseQuickAdd, formatMinutes, formatDay, addDays, nextMonday, fromISO, notionAppUrl, isNotionUrl } from './parse.js';
 import { notionCsvToTasks } from './importers.js';
 
-const $ = (sel, el = document) => el.querySelector(sel);
-const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-const ICONS = {
-  inbox: '<path d="M2 9h3l1 2h4l1-2h3"/><path d="M3.6 3h8.8L14 9v4H2V9z"/>',
-  today: '<path d="M8 1.8l1.8 3.9 4.2.5-3.1 2.9.8 4.2L8 11.2l-3.7 2.1.8-4.2L2 6.2l4.2-.5z"/>',
-  upcoming: '<rect x="2" y="3" width="12" height="11" rx="2"/><path d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3"/>',
-  anytime: '<path d="M8 2l6 3-6 3-6-3z"/><path d="M2 8l6 3 6-3"/><path d="M2 11l6 3 6-3"/>',
-  projects: '<rect x="2" y="2" width="5" height="5" rx="1.2"/><rect x="9" y="2" width="5" height="5" rx="1.2"/><rect x="2" y="9" width="5" height="5" rx="1.2"/><rect x="9" y="9" width="5" height="5" rx="1.2"/>',
-  logbook: '<path d="M3 2.5h8.5A1.5 1.5 0 0 1 13 4v9.5H4.5A1.5 1.5 0 0 1 3 12z"/><path d="M5.5 7.2l1.6 1.6 3-3.1"/>',
-  notion: '<rect x="2" y="2" width="12" height="12" rx="2.5"/><path d="M5.5 11V5l5 6V5"/>',
-  clock: '<circle cx="8" cy="8" r="6"/><path d="M8 4.8V8l2.3 1.4"/>',
-  flag: '<path d="M3.5 14V2.5M3.5 3h8L10 6l1.5 3h-8"/>',
-  check: '<path d="M3.5 8.5l3 3 6-7"/>',
-  close: '<path d="M4 4l8 8M12 4l-8 8"/>',
-  note: '<path d="M3 3h10v10H3z"/><path d="M5.5 6h5M5.5 8.5h5M5.5 11h3"/>',
-};
-const icon = (name) => `<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">${ICONS[name]}</svg>`;
+import { $, $$, esc, icon, hours, clockText, download } from './ui.js';
+import { dayReport, parseDuration, weekStart, entriesCsv } from './reports.js';
+import { timeHead, timeBody, timeAfter, exportWeek } from './views/time.js';
 
 const VIEWS = {
   inbox: { title: 'Inbox', icon: 'inbox' },
@@ -32,6 +16,7 @@ const VIEWS = {
   anytime: { title: 'Anytime', icon: 'anytime' },
   projects: { title: 'Projects', icon: 'projects' },
   logbook: { title: 'Logbook', icon: 'logbook' },
+  time: { title: 'Time', icon: 'time' },
 };
 const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const DAYS_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -83,6 +68,7 @@ function renderAll(full) {
   renderMeta();
   renderBody();
   renderDetail(full);
+  renderTimer();
   if (full) {
     const ctx = context();
     $('#qa-input').placeholder = `Add to ${ctx.label}…  try: Plan the week #project ~30m tomorrow`;
@@ -90,7 +76,7 @@ function renderAll(full) {
   }
 }
 
-const areaColor = (a) => (a ? a.color : 'var(--ink-3)');
+const areaColor = (a) => (a ? colorVar(a.color) : 'var(--ink-3)');
 const sortedAreas = () => [...store.state.areas].sort((a, b) => a.order - b.order);
 
 function renderNav() {
@@ -100,7 +86,7 @@ function renderNav() {
     const v = VIEWS[view], active = r.view === view;
     return `<a href="#${view}" class="nav-item${active ? ' active' : ''}"${active ? ' aria-current="page"' : ''}>${icon(v.icon)}<span>${v.title}</span>${count ? `<b class="count ${cls}">${count}</b>` : ''}</a>`;
   };
-  $('#nav-views').innerHTML = item('inbox', c.inbox) + item('today', c.today, late ? 'late' : '') + item('upcoming') + item('anytime') + item('projects') + item('logbook');
+  $('#nav-views').innerHTML = item('inbox', c.inbox) + item('today', c.today, late ? 'late' : '') + item('upcoming') + item('anytime') + item('projects') + item('logbook') + item('time');
 
   const projLink = (p, color) => {
     const s = store.projectStats(p.id), active = r.view === 'project' && r.id === p.id;
@@ -112,7 +98,7 @@ function renderNav() {
     const active = r.view === 'area' && r.id === a.id;
     const projects = store.areaProjects(a.id).filter(visible);
     return `<div class="nav-group"><a href="#area/${a.id}" class="nav-item area${active ? ' active' : ''}"${active ? ' aria-current="page"' : ''}>
-      <i class="dot" style="--c:${a.color}" aria-hidden="true"></i><span>${esc(a.name)}</span></a>${projects.map((p) => projLink(p, a.color)).join('')}</div>`;
+      <i class="dot" style="--c:${areaColor(a)}" aria-hidden="true"></i><span>${esc(a.name)}</span></a>${projects.map((p) => projLink(p, areaColor(a))).join('')}</div>`;
   }).join('');
   const loose = store.areaProjects(null).filter(visible);
   if (loose.length) html += `<div class="nav-group"><span class="nav-label">No area</span>${loose.map((p) => projLink(p, 'var(--ink-3)')).join('')}</div>`;
@@ -141,14 +127,16 @@ function renderHead() {
   } else if (r.view === 'area') {
     const a = store.area(r.id);
     head.innerHTML = `
-      <div class="title-row"><i class="dot big" style="--c:${a.color}" aria-hidden="true"></i>
+      <div class="title-row"><i class="dot big" style="--c:${areaColor(a)}" aria-hidden="true"></i>
         <input class="title-input" value="${esc(a.name)}" aria-label="Area name" data-afield="name"></div>
       <div class="head-fields">
-        <div class="swatches" role="group" aria-label="Colour">${AREA_COLORS.map((c) => `<button type="button" class="swatch${c === a.color ? ' on' : ''}" style="--c:${c}" data-color="${c}" aria-label="Colour ${c}" aria-pressed="${c === a.color}"></button>`).join('')}</div>
+        <div class="swatches" role="group" aria-label="Colour">${AREA_COLORS.map((c) => `<button type="button" class="swatch${c === a.color ? ' on' : ''}" style="--c:${colorVar(c)}" data-color="${c}" aria-label="${AREA_COLOR_NAMES[c]}" title="${AREA_COLOR_NAMES[c]}" aria-pressed="${c === a.color}"></button>`).join('')}</div>
         ${notionField(a.notionUrl, 'afield')}
         <button type="button" class="btn small" data-new-project="${a.id}">New project</button>
         <button type="button" class="btn small ghost danger" id="delete-area">Delete area</button>
       </div>`;
+  } else if (r.view === 'time') {
+    head.innerHTML = timeHead(store, ui);
   } else {
     const v = VIEWS[r.view];
     const sub = r.view === 'today' ? `<p class="view-sub">${longDate(store.today())}</p>` : '';
@@ -207,7 +195,12 @@ function taskRow(t, opts = {}) {
   if (t.when && opts.when !== false) chips.push(`<span class="chip${!t.done && t.when < today ? ' late' : ''}">${formatDay(t.when, today)}${t.time ? ' ' + t.time : ''}</span>`);
   else if (t.time) chips.push(`<span class="chip">${t.time}</span>`);
   if (t.deadline) chips.push(`<span class="chip deadline${!t.done && t.deadline < today ? ' late' : !t.done && t.deadline === today ? ' soon' : ''}">${icon('flag')}${formatDay(t.deadline, today)}</span>`);
-  if (t.estimate) chips.push(`<span class="chip">${icon('clock')}${formatMinutes(t.estimate)}</span>`);
+  const run = store.running();
+  const isRunning = run && run.taskId === t.id;
+  const tracked = store.tracked(t.id);
+  if (isRunning) chips.push(`<span class="chip running"><i class="pulse" aria-hidden="true"></i><span class="run-clock" data-start="${run.start}">${clockText(run.start)}</span></span>`);
+  if (tracked >= 1 && !isRunning) chips.push(`<span class="chip${t.estimate && tracked > t.estimate ? ' late' : ''}" title="Tracked${t.estimate ? ' of estimate' : ''}">${icon('time')}${hours(tracked)}${t.estimate ? ` / ${hours(t.estimate)}` : ''}</span>`);
+  else if (t.estimate) chips.push(`<span class="chip">${icon('clock')}${formatMinutes(t.estimate)}</span>`);
   if (t.notes) chips.push(`<span class="chip icon-only" title="Has notes">${icon('note')}</span>`);
   if (t.notionUrl) chips.push(`<a class="chip notion" href="${esc(notionAppUrl(t.notionUrl))}" title="Open in Notion" aria-label="Open in Notion">${icon('notion')}</a>`);
   const triage = opts.triage
@@ -217,6 +210,7 @@ function taskRow(t, opts = {}) {
     <button type="button" class="check" data-action="toggle" aria-pressed="${t.done}" aria-label="${t.done ? 'Mark not done' : 'Complete'}: ${esc(t.title)}">${icon('check')}</button>
     <div class="task-main"><span class="task-title">${esc(t.title)}</span>${chips.length ? `<span class="task-meta">${chips.join('')}</span>` : ''}</div>
     ${t.priority ? `<span class="prio p${t.priority}" title="Priority ${t.priority}">${'!'.repeat(t.priority)}</span>` : ''}${triage}
+    ${t.done ? '' : `<button type="button" class="play${isRunning ? ' on' : ''}" data-action="timer" aria-label="${isRunning ? 'Stop timer' : 'Start timer'}" title="${isRunning ? 'Stop timer' : 'Start timer'} (S)">${icon(isRunning ? 'stop' : 'play')}</button>`}
   </li>`;
 }
 const taskList = (tasks, opts) => `<ul class="tasks">${tasks.map((t) => taskRow(t, opts)).join('')}</ul>`;
@@ -257,7 +251,13 @@ function renderBody() {
       if (!list.length) html += empty('Nothing planned for today', 'Add something above, or pick from Anytime and press <kbd>T</kbd>.');
       const done = store.doneToday();
       if (done.length) html += group('done-today', 'Done today', done.length, taskList(done, { when: false }));
+      html += recapCard();
       break;
+    }
+    case 'time': {
+      body.innerHTML = timeBody(store, ui);
+      timeAfter(store, ui);
+      return;
     }
     case 'upcoming': {
       const days = store.upcoming(14);
@@ -287,7 +287,7 @@ function renderBody() {
     case 'projects': {
       const sections = sortedAreas().map((a) => {
         const ps = store.areaProjects(a.id);
-        return `<section class="area-block"><h2 class="list-head"><i class="dot" style="--c:${a.color}"></i><a href="#area/${a.id}">${esc(a.name)}</a></h2>
+        return `<section class="area-block"><h2 class="list-head"><i class="dot" style="--c:${areaColor(a)}"></i><a href="#area/${a.id}">${esc(a.name)}</a></h2>
           <div class="cards">${ps.map(projectCard).join('')}${newProjectCard(a.id)}</div></section>`;
       });
       const loose = store.areaProjects(null);
@@ -362,6 +362,7 @@ function renderDetail(force) {
         <span class="notion-row"><input type="url" data-field="notionUrl" value="${esc(t.notionUrl || '')}" placeholder="Paste a Notion link">
         <a class="btn small notion-open" href="${t.notionUrl ? esc(notionAppUrl(t.notionUrl)) : '#'}"${t.notionUrl ? '' : ' hidden'}>Open</a></span></label>
     </div>
+    ${timeSection(t)}
     <div class="d-actions">
       ${t.inbox ? '<button type="button" class="btn small" data-action="keep">Keep without a project</button>' : ''}
       <button type="button" class="btn small ghost danger" data-action="delete">Delete</button>
@@ -380,6 +381,121 @@ function autosize(ta) {
   if (!ta) return;
   ta.style.height = 'auto';
   ta.style.height = ta.scrollHeight + 'px';
+}
+
+/* ---------- time tracking ---------- */
+const LONG_RUN = 3 * 60; // minutes before a timer asks if you're still working
+
+function toggleTimer(id) {
+  const run = store.running();
+  if (run && run.taskId === id) {
+    const e = store.stopTimer();
+    toast(e ? `Logged ${hours(store.entryMinutes(e))} on “${store.task(id)?.title}”` : 'Timer stopped (under a minute, not logged)');
+  } else {
+    const t = store.task(id);
+    if (!t || t.done) return;
+    store.startTimer(id);
+    toast(`Timer started on “${t.title}”`);
+  }
+}
+
+/* The running timer, pinned in the sidebar. */
+function renderTimer() {
+  const box = $('#timer');
+  const run = store.running();
+  if (!run) { box.hidden = true; box.dataset.id = ''; document.title = 'JourneyMan'; return; }
+  const t = store.task(run.taskId);
+  if (!t) { store.discardTimer(); return; }
+  const mins = store.entryMinutes(run);
+  const long = mins >= LONG_RUN && !(run.ackUntil && new Date(run.ackUntil) > store.now());
+  box.hidden = false;
+  box.dataset.id = run.id;
+  box.innerHTML = `
+    <div class="timer-row">
+      <i class="pulse" aria-hidden="true"></i>
+      <button type="button" class="timer-task" data-timer="open" title="Show task">${esc(t.title)}</button>
+      <span class="timer-clock" data-start="${run.start}">${clockText(run.start)}</span>
+    </div>
+    <div class="timer-row">
+      <label class="deep-toggle"><input type="checkbox" data-timer="deep"${run.deep ? ' checked' : ''}> Deep work</label>
+      <button type="button" class="btn small" data-timer="stop">${icon('stop')} Stop</button>
+    </div>
+    ${long ? `<div class="timer-long">${icon('warn')}<span>Running for ${hours(mins)}. Still working?</span>
+      <span class="row"><button type="button" data-timer="keep">Yes</button><button type="button" data-timer="cap">Stop at 3h</button><button type="button" data-timer="discard">Discard</button></span></div>` : ''}`;
+}
+
+/* Every second: move the clocks without re-rendering anything else. */
+function tick() {
+  const now = store.now();
+  for (const c of $$('[data-start]')) c.textContent = clockText(c.dataset.start, now);
+  const run = store.running();
+  if (run) {
+    document.title = `${clockText(run.start, now)} · ${store.task(run.taskId)?.title || 'JourneyMan'}`;
+    const mins = store.entryMinutes(run);
+    if (mins >= LONG_RUN && !$('#timer .timer-long') && !(run.ackUntil && new Date(run.ackUntil) > now)) renderTimer();
+  }
+}
+
+function onTimerClick(e) {
+  const action = e.target.closest('[data-timer]')?.dataset.timer;
+  const run = store.running();
+  if (!action || !run) return;
+  if (action === 'open') {
+    const t = store.task(run.taskId);
+    const home = t.projectId ? 'project/' + t.projectId : t.when && t.when <= store.today() ? 'today' : t.inbox ? 'inbox' : 'anytime';
+    go(home);
+    setTimeout(() => select(t.id, true), 0);
+  } else if (action === 'stop') toggleTimer(run.taskId);
+  else if (action === 'keep') store.updateEntry(run.id, { ackUntil: new Date(store.now().getTime() + LONG_RUN * 60_000).toISOString() });
+  else if (action === 'cap') { store.stopTimer({ at: new Date(new Date(run.start).getTime() + LONG_RUN * 60_000) }); toast('Logged 3h and stopped the timer'); }
+  else if (action === 'discard') { store.discardTimer(); toast('Timer discarded'); }
+}
+
+/* The Time block in the task detail pane. */
+function timeSection(t) {
+  const run = store.running();
+  const isRunning = run && run.taskId === t.id;
+  const tracked = store.tracked(t.id);
+  const entries = store.taskEntries(t.id).filter((e) => e.end);
+  const hm = (iso) => { const d = new Date(iso); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  const dayOf = (iso) => formatDay(todayOf(new Date(iso)), store.today());
+  const over = t.estimate && tracked > t.estimate;
+  return `<section class="d-time">
+    <div class="d-time-head"><span>${icon('time')} Time</span>
+      <b class="${over ? 'late-text' : ''}">${hours(tracked)}${t.estimate ? ` of ${hours(t.estimate)}` : ' tracked'}</b></div>
+    ${t.estimate ? `<span class="bar"><i style="width:${Math.min((tracked / t.estimate) * 100, 100).toFixed(1)}%;${over ? 'background:var(--late)' : ''}"></i></span>` : ''}
+    <div class="d-time-actions">
+      ${t.done ? '' : `<button type="button" class="btn small${isRunning ? ' primary' : ''}" data-action="timer">${icon(isRunning ? 'stop' : 'play')} ${isRunning ? `Stop <span class="run-clock" data-start="${run.start}">${clockText(run.start)}</span>` : 'Start timer'}</button>`}
+      <form class="log-form" data-log-form>
+        <input type="text" name="mins" placeholder="Log 45m" aria-label="Time to log, like 45m or 1h30m" autocomplete="off">
+        <input type="date" name="day" value="${store.today()}" max="${store.today()}" aria-label="Day">
+        <button type="submit" class="btn small">Log</button>
+      </form>
+    </div>
+    ${entries.length ? `<ul class="entries">${entries.slice(0, 8).map((e) => `<li>
+      <span>${dayOf(e.start)} · ${hm(e.start)}–${hm(e.end)}</span>
+      <b>${hours(store.entryMinutes(e))}</b>
+      <button type="button" class="tag${e.deep ? ' on' : ''}" data-entry-deep="${e.id}" aria-pressed="${!!e.deep}" title="Deep work">Deep</button>
+      <button type="button" class="icon-btn" data-entry-del="${e.id}" aria-label="Remove this time">${icon('close')}</button></li>`).join('')}
+      ${entries.length > 8 ? `<li class="muted">and ${entries.length - 8} earlier</li>` : ''}</ul>` : ''}
+  </section>`;
+}
+
+/* End-of-day recap at the foot of Today. */
+function recapCard() {
+  const r = dayReport(store);
+  if (!r.total && !r.done.length) return '';
+  const top = r.byProject.slice(0, 5).map((b) => `<span class="chip where"><i class="dot" style="--c:${b.color ? colorVar(b.color) : 'var(--c-none)'}"></i>${esc(b.name)} · ${hours(b.minutes)}</span>`).join('');
+  const comp = r.compared.slice(0, 4).map((c) => {
+    const d = c.actual - c.estimate;
+    return `<li><span>${esc(c.task.title)}</span><span class="muted">${hours(c.estimate)} planned · ${hours(c.actual)} actual</span><b class="${d > 0 ? 'late-text' : 'good-text'}">${d > 0 ? '+' : '−'}${hours(Math.abs(d))}</b></li>`;
+  }).join('');
+  return `<section class="recap">
+    <h2 class="list-head">Today so far</h2>
+    <p class="recap-line"><b>${hours(r.total)}</b> tracked${r.deep ? ` · ${hours(r.deep)} deep work` : ''} · <b>${r.done.length}</b> task${r.done.length === 1 ? '' : 's'} done</p>
+    ${top ? `<div class="task-meta">${top}</div>` : ''}
+    ${comp ? `<ul class="compare">${comp}</ul>` : ''}
+  </section>`;
 }
 
 /* ---------- actions ---------- */
@@ -405,6 +521,7 @@ function completeTask(id) {
   const t = store.task(id);
   if (!t) return;
   const before = { ...t };
+  if (!t.done && store.running()?.taskId === id) store.stopTimer();
   const row = $(`#view-body .task[data-id="${id}"]`);
   if (!t.done && row) {
     row.classList.add('completing');
@@ -419,7 +536,7 @@ function deleteTask(id) {
   if (!gone) return;
   if (ui.selected === id) ui.selected = ids[i + 1] || ids[i - 1] || null;
   renderAll(false);
-  toast(`Deleted “${gone.title}”`, () => store.restore('task', gone));
+  toast(`Deleted “${gone.task.title}”`, () => store.undoDelete(gone));
 }
 function setWhen(id, when) {
   store.updateTask(id, { when });
@@ -454,7 +571,7 @@ function updatePreview() {
   const chips = [];
   if (p.projectId) chips.push(`<span class="chip where">${esc(store.project(p.projectId).name)}</span>`);
   if (p.newProject) chips.push(`<span class="chip new">New project: ${esc(p.newProject)}</span>`);
-  if (p.areaId) chips.push(`<span class="chip where"><i class="dot" style="--c:${store.area(p.areaId).color}"></i>${esc(store.area(p.areaId).name)}</span>`);
+  if (p.areaId) chips.push(`<span class="chip where"><i class="dot" style="--c:${areaColor(store.area(p.areaId))}"></i>${esc(store.area(p.areaId).name)}</span>`);
   if (p.newArea) chips.push(`<span class="chip new">New area: ${esc(p.newArea)}</span>`);
   if (p.when) chips.push(`<span class="chip">${formatDay(p.when, today)}${p.time ? ' ' + p.time : ''}</span>`);
   if (p.deadline) chips.push(`<span class="chip deadline">${icon('flag')}Due ${formatDay(p.deadline, today)}</span>`);
@@ -524,7 +641,7 @@ const match = (q) => (s) => s.toLowerCase().includes(q.trim().toLowerCase());
 function gotoSource(q) {
   const m = match(q);
   const items = Object.entries(VIEWS).filter(([, v]) => m(v.title)).map(([k, v]) => ({ label: v.title, icon: v.icon, run: () => go(k) }));
-  for (const a of sortedAreas()) if (m(a.name)) items.push({ label: a.name, color: a.color, sub: 'Area', run: () => go('area/' + a.id) });
+  for (const a of sortedAreas()) if (m(a.name)) items.push({ label: a.name, color: areaColor(a), sub: 'Area', run: () => go('area/' + a.id) });
   for (const p of store.state.projects) if (m(p.name) && p.status !== 'archived') items.push({ label: p.name, color: areaColor(store.area(p.areaId)), sub: 'Project', run: () => go('project/' + p.id) });
   if (q.trim()) {
     for (const t of store.state.tasks) {
@@ -549,9 +666,9 @@ function moveSource(taskId) {
     if (m('inbox no project')) items.push({ label: 'No project or area', icon: 'inbox', run: () => store.updateTask(taskId, { projectId: null, areaId: null }) });
     for (const a of sortedAreas()) {
       for (const p of store.state.projects.filter((x) => x.areaId === a.id && x.status !== 'archived' && x.status !== 'done')) {
-        if (m(p.name) || m(a.name)) items.push({ label: p.name, sub: a.name, color: a.color, run: () => movedTo(taskId, { projectId: p.id }, p.name) });
+        if (m(p.name) || m(a.name)) items.push({ label: p.name, sub: a.name, color: areaColor(a), run: () => movedTo(taskId, { projectId: p.id }, p.name) });
       }
-      if (m(a.name)) items.push({ label: a.name, sub: 'Area, no project', color: a.color, run: () => movedTo(taskId, { projectId: null, areaId: a.id }, a.name) });
+      if (m(a.name)) items.push({ label: a.name, sub: 'Area, no project', color: areaColor(a), run: () => movedTo(taskId, { projectId: null, areaId: a.id }, a.name) });
     }
     for (const p of store.state.projects.filter((x) => !x.areaId && x.status !== 'archived' && x.status !== 'done')) {
       if (m(p.name)) items.push({ label: p.name, sub: 'Project', run: () => movedTo(taskId, { projectId: p.id }, p.name) });
@@ -611,11 +728,18 @@ function banner(msg) {
 /* ---------- settings, backup, Notion import ---------- */
 function openSettings() {
   $('#set-hours').value = store.state.settings.hoursPerDay;
+  $('#set-days').value = store.state.settings.daysPerWeek;
+  $('#set-adjust').checked = !!store.state.settings.adjustEstimates;
+  const m = store.estimateMultiplier();
+  $('#mult-status').textContent = m.ratio ? `Right now your tasks take ${m.ratio.toFixed(2)}× your estimates (from ${m.samples} finished tasks).` : `This starts once 3 finished tasks have both an estimate and tracked time (${m.samples} so far).`;
   const n = store.state.tasks.length;
   $('#storage-status').textContent = storage.ok
     ? `${n} task${n === 1 ? '' : 's'} and ${store.state.projects.length} projects are saved in this browser on this Mac. Export a backup now and then.`
     : 'Storage is unavailable in this window, so nothing is being saved. Export before you close it.';
   $('#settings').showModal();
+}
+function exportAllTime() {
+  download(`journeyman-time-all-${store.today()}.csv`, entriesCsv(store), 'text/csv');
 }
 function exportBackup() {
   const blob = new Blob([JSON.stringify(store.snapshot(), null, 2)], { type: 'application/json' });
@@ -678,6 +802,12 @@ function bind() {
   $('#open-search').addEventListener('click', () => openPalette('Go to a list, area, project or task…', gotoSource));
   $('#open-help').addEventListener('click', () => $('#help').showModal());
   $('#open-settings').addEventListener('click', openSettings);
+  $('#set-days').addEventListener('change', (e) => {
+    const d = Number(e.target.value);
+    if (d >= 1 && d <= 7) store.updateSettings({ daysPerWeek: d });
+  });
+  $('#set-adjust').addEventListener('change', (e) => store.updateSettings({ adjustEstimates: e.target.checked }));
+  $('#export-time').addEventListener('click', () => { exportAllTime(); });
   $('#set-hours').addEventListener('change', (e) => {
     const h = Number(e.target.value);
     if (h > 0 && h <= 24) store.updateSettings({ hoursPerDay: h });
@@ -686,6 +816,11 @@ function bind() {
   $('#import-file').addEventListener('change', (e) => { if (e.target.files[0]) importBackup(e.target.files[0]); e.target.value = ''; });
   $('#import-notion-btn').addEventListener('click', () => { $('#settings').close(); pickNotionCsv(); });
   $('#toast').addEventListener('click', (e) => { if (e.target.closest('#toast-undo')) undoLast(); });
+
+  $('#timer').addEventListener('click', onTimerClick);
+  $('#timer').addEventListener('change', (e) => {
+    if (e.target.dataset.timer === 'deep' && store.running()) store.updateEntry(store.running().id, { deep: e.target.checked });
+  });
 
   // List clicks
   $('#view-body').addEventListener('click', (e) => {
@@ -697,6 +832,7 @@ function bind() {
     const id = row.dataset.id;
     const action = e.target.closest('[data-action]')?.dataset.action;
     if (action === 'toggle') completeTask(id);
+    else if (action === 'timer') toggleTimer(id);
     else if (action === 'today') setWhen(id, store.today());
     else if (action === 'move') openPalette('Move to project or area…', moveSource(id));
     else if (action === 'keep') { store.updateTask(id, { inbox: false }); toast('Kept in Anytime'); }
@@ -730,6 +866,15 @@ function bind() {
   head.addEventListener('input', onHead);
   head.addEventListener('change', onHead);
   head.addEventListener('click', (e) => {
+    const wk = e.target.closest('[data-week]');
+    if (wk) {
+      const cur = ui.week || weekStart(store.today());
+      ui.week = wk.dataset.week === '0' ? weekStart(store.today()) : addDays(cur, 7 * Number(wk.dataset.week));
+      renderHead();
+      renderBody();
+      return;
+    }
+    if (e.target.closest('[data-export-week]')) { exportWeek(store, ui); return; }
     const sw = e.target.closest('[data-color]');
     if (sw) { store.updateArea(ui.route.id, { color: sw.dataset.color }); renderHead(); return; }
     const np = e.target.closest('[data-new-project]');
@@ -765,6 +910,16 @@ function bind() {
   };
   detail.addEventListener('input', onDetail);
   detail.addEventListener('change', onDetail);
+  detail.addEventListener('submit', (e) => {
+    const form = e.target.closest('[data-log-form]');
+    if (!form || !ui.selected) return;
+    e.preventDefault();
+    const mins = parseDuration(form.mins.value);
+    if (!mins) { form.mins.setAttribute('aria-invalid', 'true'); form.mins.focus(); return; }
+    store.logTime(ui.selected, mins, { day: form.day.value || store.today() });
+    toast(`Logged ${hours(mins)}`);
+    renderDetail(true);
+  });
   detail.addEventListener('keydown', (e) => {
     if (e.target.classList.contains('d-title') && e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
   });
@@ -784,8 +939,18 @@ function bind() {
       $$('[data-priority]', detail).forEach((b) => b.setAttribute('aria-pressed', b === pr));
       return;
     }
+    const del = e.target.closest('[data-entry-del]');
+    if (del) {
+      const gone = store.deleteEntry(del.dataset.entryDel);
+      renderDetail(true);
+      if (gone) toast(`Removed ${hours(store.entryMinutes(gone))} of time`, () => { store.restore('entry', gone); renderDetail(true); });
+      return;
+    }
+    const deep = e.target.closest('[data-entry-deep]');
+    if (deep) { const en = store.entry(deep.dataset.entryDeep); store.updateEntry(en.id, { deep: !en.deep }); renderDetail(true); return; }
     const action = e.target.closest('[data-action]')?.dataset.action;
     if (action === 'toggle') completeTask(id);
+    else if (action === 'timer') { toggleTimer(id); renderDetail(true); }
     else if (action === 'delete') deleteTask(id);
     else if (action === 'keep') { store.updateTask(id, { inbox: false }); renderDetail(true); toast('Kept in Anytime'); }
   });
@@ -850,13 +1015,14 @@ function onKey(e) {
   if (gPending) {
     clearTimeout(gPending);
     gPending = 0;
-    const dest = { i: 'inbox', t: 'today', u: 'upcoming', a: 'anytime', p: 'projects', l: 'logbook' }[e.key.toLowerCase()];
+    const dest = { i: 'inbox', t: 'today', u: 'upcoming', a: 'anytime', p: 'projects', l: 'logbook', m: 'time' }[e.key.toLowerCase()];
     if (dest) { e.preventDefault(); go(dest); }
     return;
   }
   const id = ui.selected;
   switch (e.key) {
     case 'n': case 'N': case '/': e.preventDefault(); $('#qa-input').focus(); return;
+    case 's': if (!id && store.running()) { e.preventDefault(); toggleTimer(store.running().taskId); return; } break;
     case 'g': gPending = setTimeout(() => { gPending = 0; }, 1200); return;
     case '?': e.preventDefault(); $('#help').showModal(); return;
     case 'j': case 'ArrowDown': e.preventDefault(); moveSelection(1); return;
@@ -866,6 +1032,7 @@ function onKey(e) {
   switch (e.key) {
     case 'Enter': case 'e': e.preventDefault(); ui.detail = true; renderDetail(true); $('#detail .d-title')?.focus(); break;
     case 'x': case ' ': e.preventDefault(); completeTask(id); break;
+    case 's': e.preventDefault(); toggleTimer(id); if (ui.detail) renderDetail(true); break;
     case 't': e.preventDefault(); setWhen(id, store.today()); break;
     case 'T': e.preventDefault(); setWhen(id, addDays(store.today(), 1)); break;
     case 'm': e.preventDefault(); openPalette('Move to project or area…', moveSource(id)); break;
@@ -881,6 +1048,7 @@ async function boot() {
   if (!store.state.settings.seeded && !store.state.tasks.length && !store.state.projects.length) seed(store);
   if (!storage.ok) banner('Storage is unavailable in this window (private browsing?), so changes will not be kept.');
   ui.lastDay = store.today();
+  setInterval(tick, 1000);
   store.subscribe(() => renderAll(false));
   bind();
   onRoute();

@@ -3,9 +3,18 @@
 
 import { todayISO, daysBetween, addDays, parseQuickAdd } from './parse.js';
 
-export const AREA_COLORS = ['#e2632b', '#2f7dd1', '#2e9e6b', '#9b5bd4', '#d4a017', '#d6457a', '#3aa3a3', '#6b7a8f'];
+/* Area colours are slots of a validated, colour-blind-checked categorical palette (fixed order).
+   The hex for each slot lives in css/app.css as --c1…--c8, with its own light and dark steps. */
+export const AREA_COLORS = ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8'];
+export const AREA_COLOR_NAMES = { c1: 'Blue', c2: 'Orange', c3: 'Aqua', c4: 'Yellow', c5: 'Pink', c6: 'Green', c7: 'Violet', c8: 'Red' };
+/* Colours saved by the first version, mapped to the nearest slot. */
+const LEGACY_COLORS = { '#2f7dd1': 'c1', '#e2632b': 'c2', '#2e9e6b': 'c3', '#d4a017': 'c4', '#d6457a': 'c5', '#3aa3a3': 'c6', '#9b5bd4': 'c7', '#6b7a8f': 'c8' };
+export const colorVar = (slot) => (/^c[1-8]$/.test(slot || '') ? `var(--${slot})` : slot || 'var(--ink-3)');
 
-export const DEFAULT_SETTINGS = { hoursPerDay: 6, seeded: false };
+export const DEFAULT_SETTINGS = {
+  hoursPerDay: 6, daysPerWeek: 5, adjustEstimates: true, seeded: false,
+  reviews: [], // ISO dates of finished weekly reviews
+};
 
 let lastOrder = 0;
 const nextOrder = () => (lastOrder = Math.max(Date.now(), lastOrder + 1));
@@ -18,25 +27,32 @@ export function createStore(persist = {}) {
   const remove = persist.remove || (() => {});
   const now = persist.now || (() => new Date());
 
-  const state = { areas: [], projects: [], tasks: [], settings: { ...DEFAULT_SETTINGS } };
+  const state = { areas: [], projects: [], tasks: [], entries: [], tombstones: [], settings: { ...DEFAULT_SETTINGS } };
   const listeners = new Set();
   const emit = () => listeners.forEach((fn) => fn());
   const today = () => todayISO(now());
   const stamp = () => now().toISOString();
-  const kindOf = { area: 'areas', project: 'projects', task: 'tasks' };
+  const kindOf = { area: 'areas', project: 'projects', task: 'tasks', entry: 'entries' };
 
-  function put(kind, rec) {
+  /* Every change is stamped with updatedAt, which Notion sync and device sync use to decide who wins. */
+  function put(kind, rec, { touch = true } = {}) {
+    if (touch) rec = { ...rec, updatedAt: stamp() };
     const list = state[kindOf[kind]];
     const i = list.findIndex((x) => x.id === rec.id);
     if (i >= 0) list[i] = rec; else list.push(rec);
     save(kindOf[kind], rec);
     return rec;
   }
-  function drop(kind, id) {
+  /* Removing a record leaves a tombstone so device sync can pass the deletion on. */
+  function drop(kind, id, { tombstone = true } = {}) {
     const list = state[kindOf[kind]];
     const i = list.findIndex((x) => x.id === id);
     if (i >= 0) list.splice(i, 1);
     remove(kindOf[kind], id);
+    if (tombstone) {
+      state.tombstones = state.tombstones.filter((t) => t.id !== id).concat({ id, kind, deletedAt: stamp() }).slice(-2000);
+      save('meta', { id: 'tombstones', list: state.tombstones });
+    }
   }
 
   const store = {
@@ -45,19 +61,31 @@ export function createStore(persist = {}) {
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
 
     load(data) {
-      state.areas = data.areas || [];
+      state.areas = (data.areas || []).map((a) => (LEGACY_COLORS[a.color] ? { ...a, color: LEGACY_COLORS[a.color] } : a));
       state.projects = data.projects || [];
       state.tasks = data.tasks || [];
+      state.entries = data.entries || [];
+      state.tombstones = data.tombstones || [];
       state.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
       emit();
     },
     snapshot() {
-      return JSON.parse(JSON.stringify({ app: 'JourneyMan', version: 1, exportedAt: stamp(), ...state }));
+      return JSON.parse(JSON.stringify({ app: 'JourneyMan', version: 2, exportedAt: stamp(), ...state }));
     },
+    /* Writes a record that came from elsewhere (Notion, another device) without re-stamping it. */
+    applyRemote(kind, rec) {
+      put(kind, rec, { touch: false });
+    },
+    removeRemote(kind, id) {
+      drop(kind, id, { tombstone: false });
+    },
+    notify: () => emit(),
 
     area: (id) => state.areas.find((a) => a.id === id) || null,
     project: (id) => state.projects.find((p) => p.id === id) || null,
     task: (id) => state.tasks.find((t) => t.id === id) || null,
+    entry: (id) => state.entries.find((e) => e.id === id) || null,
+    now,
 
     /* ---------- areas ---------- */
     addArea(name, color) {
@@ -103,7 +131,10 @@ export function createStore(persist = {}) {
     /* Open tasks go back to the inbox so nothing is lost; finished ones go with the project. */
     deleteProject(id) {
       for (const t of state.tasks.filter((t) => t.projectId === id)) {
-        if (t.done) drop('task', t.id);
+        if (t.done) {
+          for (const e of state.entries.filter((e) => e.taskId === t.id)) drop('entry', e.id);
+          drop('task', t.id);
+        }
         else put('task', { ...t, projectId: null, inbox: !t.areaId && !t.when && !t.deadline });
       }
       drop('project', id);
@@ -157,16 +188,122 @@ export function createStore(persist = {}) {
       const t = store.task(id);
       return t ? store.updateTask(id, { done: !t.done }) : null;
     },
+    /* Deletes a task and its time entries. Returns both, for undo. */
     deleteTask(id) {
-      const t = store.task(id);
+      const task = store.task(id);
+      if (!task) return null;
+      const entries = state.entries.filter((e) => e.taskId === id);
+      for (const e of entries) drop('entry', e.id);
       drop('task', id);
       emit();
-      return t;
+      return { task, entries };
+    },
+    undoDelete({ task, entries = [] }) {
+      put('task', task);
+      for (const e of entries) put('entry', e);
+      state.tombstones = state.tombstones.filter((t) => t.id !== task.id && !entries.some((e) => e.id === t.id));
+      save('meta', { id: 'tombstones', list: state.tombstones });
+      emit();
     },
     /* Puts a record back exactly as it was (undo). */
     restore(kind, rec) {
       put(kind, rec);
       emit();
+    },
+
+    /* ---------- time tracking ---------- */
+    running() {
+      return state.entries.find((e) => !e.end) || null;
+    },
+    /* Starts a timer on a task, stopping any other. */
+    startTimer(taskId, { deep = false } = {}) {
+      const r = store.running();
+      if (r && r.taskId === taskId) return r;
+      if (r) store.stopTimer();
+      const e = put('entry', { id: uid(), taskId, start: stamp(), end: null, deep, source: 'timer', note: '' });
+      emit();
+      return e;
+    },
+    /* Stops the running timer. A run of under a minute is treated as a mis-click and dropped. */
+    stopTimer({ at } = {}) {
+      const r = store.running();
+      if (!r) return null;
+      const end = at ? new Date(at) : now();
+      if (end - new Date(r.start) < 60_000) {
+        drop('entry', r.id, { tombstone: false });
+        emit();
+        return null;
+      }
+      const e = put('entry', { ...r, end: end.toISOString() });
+      emit();
+      return e;
+    },
+    discardTimer() {
+      const r = store.running();
+      if (r) { drop('entry', r.id, { tombstone: false }); emit(); }
+    },
+    /* Time logged by hand: `minutes` ending now (today) or at 6pm on an earlier day. */
+    logTime(taskId, minutes, { day = null, deep = false, note = '' } = {}) {
+      if (!(minutes > 0)) return null;
+      let end = now();
+      if (day && day !== today()) {
+        const [y, m, d] = day.split('-').map(Number);
+        end = new Date(y, m - 1, d, 18, 0, 0);
+      }
+      const start = new Date(end.getTime() - minutes * 60_000);
+      const e = put('entry', { id: uid(), taskId, start: start.toISOString(), end: end.toISOString(), deep, source: 'manual', note });
+      emit();
+      return e;
+    },
+    updateEntry(id, fields) {
+      const e = store.entry(id);
+      if (!e) return null;
+      const next = put('entry', { ...e, ...fields });
+      emit();
+      return next;
+    },
+    deleteEntry(id) {
+      const e = store.entry(id);
+      if (!e) return null;
+      drop('entry', id);
+      emit();
+      return e;
+    },
+    entryMinutes(e) {
+      const end = e.end ? new Date(e.end) : now();
+      return Math.max(0, (end - new Date(e.start)) / 60_000);
+    },
+    taskEntries(taskId) {
+      return state.entries.filter((e) => e.taskId === taskId).sort((a, b) => (a.start < b.start ? 1 : -1));
+    },
+    tracked(taskId) {
+      return state.entries.reduce((s, e) => (e.taskId === taskId ? s + store.entryMinutes(e) : s), 0);
+    },
+    /* Entries whose start falls on a local day from `from` to `to` (inclusive). */
+    entriesBetween(from, to) {
+      return state.entries.filter((e) => {
+        const d = localDay(e.start);
+        return d >= from && d <= to;
+      });
+    },
+    /* How long tasks really take compared with their estimates, from finished tasks that have both. */
+    estimateMultiplier(sample = 30) {
+      const done = state.tasks
+        .filter((t) => t.done && t.estimate > 0)
+        .map((t) => ({ t, actual: store.tracked(t.id) }))
+        .filter((x) => x.actual >= 1)
+        .sort((a, b) => (a.t.doneAt < b.t.doneAt ? 1 : -1))
+        .slice(0, sample);
+      if (done.length < 3) return { ratio: null, samples: done.length };
+      const est = done.reduce((s, x) => s + x.t.estimate, 0);
+      const act = done.reduce((s, x) => s + x.actual, 0);
+      return { ratio: act / est, samples: done.length };
+    },
+    /* An estimate adjusted by your multiplier, when that setting is on. */
+    adjusted(minutes) {
+      if (!minutes) return 0;
+      const m = state.settings.adjustEstimates ? store.estimateMultiplier().ratio : null;
+      return m ? minutes * m : minutes;
     },
 
     updateSettings(fields) {
@@ -227,7 +364,8 @@ export function createStore(persist = {}) {
       const estimateLeft = open.reduce((s, t) => s + (t.estimate || 0), 0);
       const unestimated = open.filter((t) => !t.estimate).length;
       const daysLeft = p && p.deadline ? daysBetween(today(), p.deadline) : null;
-      return { open: open.length, done: done.length, total, progress: total ? done.length / total : 0, estimateLeft, unestimated, daysLeft };
+      const tracked = [...open, ...done].reduce((s, t) => s + store.tracked(t.id), 0);
+      return { open: open.length, done: done.length, total, progress: total ? done.length / total : 0, estimateLeft, unestimated, daysLeft, tracked };
     },
     /* Planned minutes for today against the hours you said you have. */
     capacity() {
@@ -289,9 +427,9 @@ function byProject(a, b) {
 /* A first-run example so the app isn't empty, all of it deletable. */
 export function seed(store) {
   const d = store.today();
-  const work = store.addArea('Work', AREA_COLORS[1]);
+  const work = store.addArea('Work', AREA_COLORS[0]);
   const personal = store.addArea('Personal', AREA_COLORS[2]);
-  store.addArea('Health', AREA_COLORS[0]);
+  store.addArea('Health', AREA_COLORS[1]);
   const start = store.addProject('Getting started with JourneyMan', { areaId: personal.id });
   const tips = [
     ['Press N and type: Plan the week #getting-started ~20m tomorrow', 5],

@@ -1,8 +1,8 @@
 // JourneyMan — IndexedDB storage. Everything stays in this browser on this Mac.
 
 const DB_NAME = 'journeyman';
-const DB_VERSION = 1;
-const STORES = ['areas', 'projects', 'tasks', 'meta'];
+const DB_VERSION = 2; // 2 added time entries
+const STORES = ['areas', 'projects', 'tasks', 'entries', 'meta'];
 
 function open() {
   return new Promise((resolve, reject) => {
@@ -41,14 +41,15 @@ export async function openStorage() {
     console.warn('JourneyMan: storage unavailable, working in memory only.', err);
     return { ok: false, error: err, data: {}, save() {}, remove() {}, async replaceAll() {} };
   }
-  const [areas, projects, tasks, meta] = await Promise.all(STORES.map((s) => getAll(db, s)));
+  const [areas, projects, tasks, entries, meta] = await Promise.all(STORES.map((s) => getAll(db, s)));
   const settings = meta.find((m) => m.id === 'settings');
   if (settings) delete settings.id;
+  const tombstones = (meta.find((m) => m.id === 'tombstones') || {}).list || [];
 
   const onError = (err) => console.error('JourneyMan: could not save.', err);
   return {
     ok: true,
-    data: { areas, projects, tasks, settings },
+    data: { areas, projects, tasks, entries, tombstones, settings },
     save(store, record) {
       try {
         const tx = db.transaction(store, 'readwrite');
@@ -67,8 +68,9 @@ export async function openStorage() {
     async replaceAll(data) {
       const tx = db.transaction(STORES, 'readwrite');
       for (const s of STORES) tx.objectStore(s).clear();
-      for (const s of ['areas', 'projects', 'tasks']) for (const rec of data[s] || []) tx.objectStore(s).put(rec);
+      for (const s of ['areas', 'projects', 'tasks', 'entries']) for (const rec of data[s] || []) tx.objectStore(s).put(rec);
       tx.objectStore('meta').put({ id: 'settings', ...(data.settings || {}) });
+      tx.objectStore('meta').put({ id: 'tombstones', list: data.tombstones || [] });
       await done(tx);
     },
   };

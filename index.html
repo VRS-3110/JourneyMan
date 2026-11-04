@@ -25,6 +25,7 @@
       <button type="button" class="icon-btn" id="add-area" aria-label="New area" title="New area">+</button>
     </div>
     <nav id="nav-areas" class="nav nav-areas"></nav>
+    <div class="timer" id="timer" hidden aria-live="polite"></div>
     <div class="sidebar-foot">
       <button type="button" class="foot-btn" id="open-search"><span>Search</span><kbd>⌘K</kbd></button>
       <button type="button" class="foot-btn" id="open-help"><span>Shortcuts</span><kbd>?</kbd></button>
@@ -75,7 +76,8 @@
         <tr><th>Anywhere</th><td></td></tr>
         <tr><td><kbd>N</kbd> or <kbd>/</kbd></td><td>Add a task</td></tr>
         <tr><td><kbd>⌘</kbd><kbd>K</kbd></td><td>Search and jump</td></tr>
-        <tr><td><kbd>G</kbd> then <kbd>I</kbd> <kbd>T</kbd> <kbd>U</kbd> <kbd>A</kbd> <kbd>P</kbd> <kbd>L</kbd></td><td>Go to Inbox, Today, Upcoming, Anytime, Projects, Logbook</td></tr>
+        <tr><td><kbd>G</kbd> then <kbd>I</kbd> <kbd>T</kbd> <kbd>U</kbd> <kbd>A</kbd> <kbd>P</kbd> <kbd>L</kbd> <kbd>M</kbd></td><td>Go to Inbox, Today, Upcoming, Anytime, Projects, Logbook, Time</td></tr>
+        <tr><td><kbd>S</kbd> (nothing selected)</td><td>Stop the running timer</td></tr>
         <tr><td><kbd>⌘</kbd><kbd>Z</kbd></td><td>Undo the last complete or delete</td></tr>
         <tr><td><kbd>?</kbd></td><td>This help</td></tr>
         <tr><th>Selected task</th><td></td></tr>
@@ -85,6 +87,7 @@
         <tr><td><kbd>T</kbd></td><td>Do it today</td></tr>
         <tr><td><kbd>⇧</kbd><kbd>T</kbd></td><td>Do it tomorrow</td></tr>
         <tr><td><kbd>M</kbd></td><td>Move to a project or area</td></tr>
+        <tr><td><kbd>S</kbd></td><td>Start or stop its timer</td></tr>
         <tr><td><kbd>⌫</kbd></td><td>Delete</td></tr>
         <tr><td><kbd>Esc</kbd></td><td>Close details or clear selection</td></tr>
       </table>
@@ -113,6 +116,14 @@
       <input id="set-hours" type="number" min="1" max="16" step="0.5">
     </label>
     <p class="hint">Today compares your estimates with this.</p>
+    <label class="field">
+      <span>Days a week you work on tasks</span>
+      <input id="set-days" type="number" min="1" max="7" step="1">
+    </label>
+    <label class="check-field"><input type="checkbox" id="set-adjust"> Adjust estimates by how long tasks really take me</label>
+    <p class="hint" id="mult-status"></p>
+    <h3>Time</h3>
+    <div class="row"><button type="button" class="btn" id="export-time">Export all tracked time (CSV)</button></div>
     <h3>Backup</h3>
     <p class="hint" id="storage-status"></p>
     <div class="row">

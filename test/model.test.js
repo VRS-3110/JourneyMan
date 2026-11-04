@@ -128,8 +128,10 @@ test('changes are saved and undo restores a deleted task', () => {
   assert.ok(saved.some(([s, id]) => s === 'tasks' && id === t.id));
   const gone = store.deleteTask(t.id);
   assert.ok(removed.some(([s, id]) => s === 'tasks' && id === t.id));
-  store.restore('task', gone);
+  assert.equal(store.state.tombstones[0].id, t.id);
+  store.undoDelete(gone);
   assert.equal(store.task(t.id).title, 'x');
+  assert.ok(store.task(t.id).updatedAt, 'every write is stamped');
 });
 
 test('seed data and search', () => {
