@@ -23,6 +23,7 @@ import { findByName } from './parse.js';
 import { describeRepeat } from './recurrence.js';
 import { eventsOn, findSlot, normalizeEvents } from './calendar.js';
 import { authorize, revoke, tokenValid, calendarApi, readCalendar, blockBody } from './gcal.js';
+import { native } from './native.js';
 import { ATLAS_FILE, ATLAS_PREFIX, JOURNEYMAN_FILE, parseAtlasExport, importAtlas, journeymanExport, exportKey, summaryText, atlasTaskId, atlasLink, atlasNodeOf } from './atlas.js';
 
 const VIEWS = {
@@ -623,7 +624,7 @@ function routeToTask(raw) {
 const bridgeReady = () => !!(store.state.settings.notion.workerUrl && store.state.settings.notion.appKey);
 const notionApi = () => makeApi(store.state.settings.notion);
 function connectionsExtra() { return ', Atlas, Google Calendar, device sync and Claude'; }
-function extraConnections() { return atlasSection(store, ui, { canPick: canPickFolder() }) + gcalSection() + syncSection() + aiSection(); }
+function extraConnections() { return atlasSection(store, ui, { canPick: canPickFolder(), native: !!native }) + gcalSection() + syncSection() + aiSection(); }
 
 function setNotion(fields) {
   store.updateSettings({ notion: { ...store.state.settings.notion, ...fields } });
@@ -659,6 +660,8 @@ async function runNotionSync(indexes = null, { quiet = false } = {}) {
 
 /* ---------- Mac activity ---------- */
 async function loadFolder() {
+  // In the Mac app the folder is always there: ~/Documents/JourneyMan/activity, read directly.
+  if (native) { ui.folderHandle = native.folder('activity'); ui.folder = 'granted'; return; }
   const rec = await storage.getMeta('activityDir');
   ui.folderHandle = rec ? rec.handle : null;
   ui.folder = null;
@@ -682,7 +685,10 @@ async function refreshActivity() {
 }
 async function connectFolder(reconnect) {
   try {
-    if (reconnect && ui.folderHandle) {
+    if (native) {
+      ui.folderHandle = await native.ensureFolder('activity');
+      ui.folder = 'granted';
+    } else if (reconnect && ui.folderHandle) {
       ui.folder = await ui.folderHandle.requestPermission({ mode: 'read' });
     } else {
       const handle = await window.showDirectoryPicker({ id: 'journeyman-activity', mode: 'read', startIn: 'documents' });
@@ -697,9 +703,16 @@ async function connectFolder(reconnect) {
   if (ui.folder === 'granted') toast('Activity folder connected');
 }
 /* ---------- Atlas: tasks.json in, journeyman.json out, through a shared folder ---------- */
-const canPickFolder = () => typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function';
+const canPickFolder = () => !!native || (typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function');
 const setAtlas = (fields) => store.updateSettings({ atlas: { ...store.state.settings.atlas, ...fields } }, { silent: true });
 async function loadAtlasFolder() {
+  // The Mac app uses ~/Documents/JourneyMan/atlas directly, unless you disconnected it.
+  if (native) {
+    const on = !store.state.settings.atlas.off;
+    ui.atlasHandle = on ? native.folder('atlas') : null;
+    ui.atlas = on ? 'granted' : null;
+    return;
+  }
   const rec = await storage.getMeta('atlasDir');
   ui.atlasHandle = rec ? rec.handle : null;
   ui.atlas = null;
@@ -716,7 +729,11 @@ async function atlasFolderIn(handle) {
 }
 async function connectAtlas(reconnect) {
   try {
-    if (reconnect && ui.atlasHandle) {
+    if (native) {
+      ui.atlasHandle = await native.ensureFolder('atlas');
+      ui.atlas = 'granted';
+      setAtlas({ off: false });
+    } else if (reconnect && ui.atlasHandle) {
       ui.atlas = await ui.atlasHandle.requestPermission({ mode: 'readwrite' });
     } else {
       const picked = await window.showDirectoryPicker({ id: 'journeyman-atlas', mode: 'readwrite', startIn: 'documents' });
@@ -734,7 +751,7 @@ function disconnectAtlas() {
   ui.atlasHandle = null;
   ui.atlas = null;
   ui.atlasWaiting = false;
-  setAtlas({ lastError: null });
+  setAtlas({ lastError: null, off: true });
   renderBody();
   toast('Atlas folder disconnected. Tasks already here stay.');
 }
@@ -938,7 +955,7 @@ async function connectionsAction(act, el) {
     if (!cfg.url || !cfg.anonKey) { toast('Add your Supabase project URL and anon key first.'); return; }
     if (!/.+@.+\..+/.test(cfg.email || '')) { toast('Enter your email first.'); return; }
     try {
-      await supabase(cfg).sendCode(cfg.email.trim(), location.origin + location.pathname);
+      await supabase(cfg).sendCode(cfg.email.trim(), location.href.split('#')[0]);
       ui.codeSent = true;
       toast('Check your email for a 6-digit code (or open the link on this device).');
       renderBody();
@@ -1309,8 +1326,20 @@ function onRepeat(el) {
 
 /* ---------- Google Calendar ---------- */
 const gcfg = () => store.state.settings.gcal;
+/* The Mac app reads the Mac's calendars (EventKit) instead of signing in to Google. */
+const calLabel = () => (native ? 'Calendar' : 'Google Calendar');
+const calOn = () => (native ? !!gcfg().mac : !!gcfg().clientId);
+const calApi = (token) => (native ? native.calendarApi() : calendarApi(token));
 
 async function calendarToken(interactive, consent = false) {
+  if (native) {
+    if (!interactive) return gcfg().mac ? { native: true } : null;
+    if (await native.calendarAccess() !== 'granted') {
+      throw new Error('JourneyMan can’t see your calendars. Turn it on in System Settings ▸ Privacy & Security ▸ Calendars, then try again.');
+    }
+    if (!gcfg().mac) store.updateSettings({ gcal: { ...gcfg(), mac: true } }, { silent: true });
+    return { native: true };
+  }
   if (tokenValid(ui.gcalToken)) return ui.gcalToken;
   if (!interactive) return null;
   const tok = await authorize(gcfg().clientId, { prompt: consent ? 'consent' : '' });
@@ -1321,17 +1350,17 @@ async function calendarToken(interactive, consent = false) {
 
 /* Re-reads the next 4 weeks. `interactive` may open Google's sign-in (only call that from a click). */
 async function refreshCalendar({ interactive = false, consent = false } = {}) {
-  if (!gcfg().clientId || ui.gcalBusy) return;
+  if ((!native && !gcfg().clientId) || ui.gcalBusy) return;
   ui.gcalBusy = true;
   try {
     const token = await calendarToken(interactive, consent);
     if (!token) return;
-    const cal = await readCalendar(calendarApi(token), { selected: gcfg().calendars, days: 28 });
+    const cal = await readCalendar(calApi(token), { selected: gcfg().calendars, days: 28 });
     store.setCalendar(cal);
     if (interactive) toast(`Calendar read: ${cal.events.filter((e) => !e.allDay).length} events in the next 4 weeks`);
   } catch (err) {
     if (err.status === 401) { ui.gcalToken = null; storage.remove('meta', 'gcalToken'); }
-    if (interactive) toast(`Google Calendar: ${err.message}`);
+    if (interactive) toast(`${calLabel()}: ${err.message}`);
   } finally {
     ui.gcalBusy = false;
     if (ui.route.view === 'connections') renderBody();
@@ -1347,7 +1376,7 @@ function agoText(iso) {
 /* Today's meetings, on Today. */
 function calendarCard() {
   const cal = store.state.calendar;
-  if (!cal) return gcfg().clientId ? `<section class="cal-card"><p class="hint">${icon('upcoming')} Google Calendar isn't read yet. <button type="button" class="link-btn" data-gcal="refresh">Read it now</button></p></section>` : '';
+  if (!cal) return calOn() ? `<section class="cal-card"><p class="hint">${icon('upcoming')} ${calLabel()} isn't read yet. <button type="button" class="link-btn" data-gcal="refresh">Read it now</button></p></section>` : '';
   const day = store.today();
   const evs = eventsOn(cal.events, day);
   const now = Date.now();
@@ -1376,42 +1405,45 @@ async function blockTime(id) {
     const slot = findSlot(store.state.calendar?.events || [], mins, Date.now(), gcfg());
     if (!slot) { toast('No free slot in your work hours this week.'); return; }
     const calId = gcfg().blockCalendar || 'primary';
-    const ev = await calendarApi(token).createEvent(calId, blockBody(t, slot, { appUrl: location.href.split('#')[0] }));
+    const ev = await calApi(token).createEvent(calId, blockBody(t, slot, { appUrl: location.href.split('#')[0] }));
     store.updateTask(id, { block: { eventId: ev.id, calendarId: calId, start: slot.start, end: slot.end, link: ev.htmlLink || null }, when: slot.day, time: hmOf(slot.start) });
     const cal = store.state.calendar || { events: [], calendars: [], used: [], fetchedAt: new Date().toISOString() };
     store.setCalendar({ ...cal, events: [...cal.events, ...normalizeEvents([ev], calId, 'JourneyMan')].sort((a, b) => (a.start < b.start ? -1 : 1)) });
     toast(`Blocked ${formatDay(slot.day, store.today())} ${hmOf(slot.start)}–${hmOf(slot.end)} in your calendar`);
     renderDetail(true);
-  } catch (err) { toast(`Google Calendar: ${err.message}`); }
+  } catch (err) { toast(`${calLabel()}: ${err.message}`); }
 }
 async function unblock(id) {
   const t = store.task(id);
   if (!t || !t.block) return;
   try {
     const token = await calendarToken(true);
-    await calendarApi(token).deleteEvent(t.block.calendarId, t.block.eventId).catch((err) => { if (err.status !== 404 && err.status !== 410) throw err; });
+    await calApi(token).deleteEvent(t.block.calendarId, t.block.eventId).catch((err) => { if (err.status !== 404 && err.status !== 410) throw err; });
     const cal = store.state.calendar;
     if (cal) store.setCalendar({ ...cal, events: cal.events.filter((e) => e.id !== t.block.eventId) });
     store.updateTask(id, { block: null });
     toast('Time block removed');
     renderDetail(true);
-  } catch (err) { toast(`Google Calendar: ${err.message}`); }
+  } catch (err) { toast(`${calLabel()}: ${err.message}`); }
 }
 
 function gcalSection() {
   const g = gcfg();
   const cal = store.state.calendar;
   const used = cal ? new Set(cal.used || []) : new Set();
+  const how = native
+    ? 'JourneyMan reads the calendars on this Mac, the same ones the Calendar app shows. To include Google Calendar, add your Google account in System Settings ▸ Internet Accounts. Nothing leaves this Mac.'
+    : 'JourneyMan talks to Google straight from this browser with your own OAuth client ID. Setup takes about 5 minutes: <code>docs/GOOGLE_CALENDAR.md</code>. The next 4 weeks of events are kept only on this device.';
   return `<section class="card" id="gcal">
-    <h2 class="card-title">${icon('upcoming')} Google Calendar</h2>
-    <p class="card-sub">Meetings come out of your daily hours. Next up checks what fits before your next meeting, the forecast subtracts meeting time, the journal lists your meetings, and a task can get a time block in your calendar. JourneyMan talks to Google straight from this browser with your own OAuth client ID. Setup takes about 5 minutes: <code>docs/GOOGLE_CALENDAR.md</code>. The next 4 weeks of events are kept only on this device.</p>
+    <h2 class="card-title">${icon('upcoming')} ${calLabel()}</h2>
+    <p class="card-sub">Meetings come out of your daily hours. Next up checks what fits before your next meeting, the forecast subtracts meeting time, the journal lists your meetings, and a task can get a time block in your calendar. ${how}</p>
     <div class="form-grid">
-      <label class="field"><span>OAuth client ID</span><input type="text" data-set="gcal.clientId" value="${esc(g.clientId)}" placeholder="1234…apps.googleusercontent.com" autocomplete="off"></label>
+      ${native ? '' : `<label class="field"><span>OAuth client ID</span><input type="text" data-set="gcal.clientId" value="${esc(g.clientId)}" placeholder="1234…apps.googleusercontent.com" autocomplete="off"></label>`}
       <label class="field"><span>Work day starts</span><input type="time" data-set="gcal.workStart" value="${esc(g.workStart)}"></label>
       <label class="field"><span>Work day ends</span><input type="time" data-set="gcal.workEnd" value="${esc(g.workEnd)}"></label>
     </div>
     <div class="row-actions-inline">
-      <button type="button" class="btn small${cal ? '' : ' primary'}" data-gcal="${cal ? 'refresh' : 'connect'}">${cal ? `${icon('sync')} Refresh` : 'Connect Google Calendar'}</button>
+      <button type="button" class="btn small${cal ? '' : ' primary'}" data-gcal="${cal ? 'refresh' : 'connect'}">${cal ? `${icon('sync')} Refresh` : `Connect ${native ? 'your calendars' : 'Google Calendar'}`}</button>
       ${cal ? `<span>${icon('ok')} ${cal.events.filter((e) => !e.allDay).length} events from ${used.size} calendar${used.size === 1 ? '' : 's'} · read ${agoText(cal.fetchedAt)}</span>
         <button type="button" class="btn small ghost danger" data-gcal="disconnect">Disconnect</button>` : ''}
     </div>
@@ -1425,12 +1457,13 @@ function gcalSection() {
 async function gcalAction(act, el) {
   if (act === 'connect' || act === 'refresh') return refreshCalendar({ interactive: true, consent: act === 'connect' && !tokenValid(ui.gcalToken) });
   if (act === 'disconnect') {
-    if (!confirm('Disconnect Google Calendar? Meetings stop counting, and time blocks already made stay in your calendar.')) return;
+    if (!confirm(`Disconnect ${calLabel()}? Meetings stop counting, and time blocks already made stay in your calendar.`)) return;
+    if (native) store.updateSettings({ gcal: { ...gcfg(), mac: false } }, { silent: true });
     if (ui.gcalToken) revoke(ui.gcalToken);
     ui.gcalToken = null;
     storage.remove('meta', 'gcalToken');
     store.setCalendar(null);
-    toast('Google Calendar disconnected');
+    toast(`${calLabel()} disconnected`);
   }
 }
 
@@ -1829,7 +1862,7 @@ function bind() {
     if (el.dataset.gcalCal != null && e.type === 'change') {
       const ids = $$('[data-gcal-cal]').filter((c) => c.checked).map((c) => c.dataset.gcalCal);
       store.updateSettings({ gcal: { ...store.state.settings.gcal, calendars: ids } }, { silent: true });
-      if (tokenValid(ui.gcalToken)) refreshCalendar(); else toast('Choose Refresh to apply.');
+      if (native || tokenValid(ui.gcalToken)) refreshCalendar(); else toast('Choose Refresh to apply.');
       return;
     }
     if (el.dataset.set) { onSettingInput(el); return; }

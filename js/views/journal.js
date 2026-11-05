@@ -53,7 +53,7 @@ export function journalBody(store, ui, { notion }) {
   if (!act) {
     html += `<section class="card helper-card"><h2 class="card-title">${icon('time')} See what you did on your Mac</h2>
       <p>Install the small JourneyMan helper (in the <code>mac-agent</code> folder: <code>bash install.sh</code>). Every 30 seconds it notes which app and window you're in, stored only on your Mac in <code>Documents/JourneyMan/activity</code>.</p>
-      <p class="hint">Then connect that folder here (Chrome) or import a day's <code>.jsonl</code> file (Safari). Below, the journal still uses your timers and tasks.</p></section>`;
+      <p class="hint">Then connect that folder here (Chrome) or import a day's <code>.jsonl</code> file (Safari). The JourneyMan Mac app reads it by itself. Below, the journal still uses your timers and tasks.</p></section>`;
   } else {
     const activeApps = summary.byApp.slice(0, 5).map((a) => `${esc(a.app)} ${hours(a.minutes)}`).join(' · ');
     html += `<div class="tiles">

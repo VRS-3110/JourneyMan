@@ -6,7 +6,9 @@ All five phases of the plan are built. What happened in each phase, and how it w
 
 ## Run it
 
-It's a plain web app with no build step. Serve the folder and open it in Safari or Chrome:
+**As a Mac app:** `mac/Scripts/make-dmg.sh` builds a DMG. Drag JourneyMan to Applications, and it opens from the Dock with no Terminal or browser. It reads your Mac's calendars, the activity folder and the Atlas folder by itself. See [`mac/README.md`](mac/README.md).
+
+**In a browser:** it's a plain web app with no build step. Serve the folder and open it in Safari or Chrome:
 
 ```bash
 python3 -m http.server 8000
@@ -86,6 +88,7 @@ js/calendar.js        meetings, free time and slots (no network)
 js/gcal.js            Google sign-in and Calendar API, from the browser
 js/activity.js        Mac activity → sessions → matches → time and journal
 js/atlas.js           the Atlas link: tasks.json in, journeyman.json out
+js/native.js          the Mac app's bridge (folders and the Mac's calendars); unused in a browser
 js/notion.js          Notion mapping and two-way sync (through the bridge)
 js/sync.js            Supabase device sync
 js/ai.js              calls the Claude features on the bridge
@@ -96,6 +99,7 @@ sw.js                 offline cache (bump CACHE when files change)
 worker/               the bridge: Notion proxy + Claude features (Cloudflare Worker)
 mac-agent/            activity helper for macOS
 supabase/schema.sql   the sync table, row-level security and push function
+mac/                  the Mac app (Swift): a native window around these pages, built into a DMG
 test/                 node:test tests
 ```
 

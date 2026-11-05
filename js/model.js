@@ -19,9 +19,9 @@ export const DEFAULT_SETTINGS = {
   activityRules: [], // { id, field: 'app' | 'title', contains, target: { kind: 'task' | 'project' | 'area', id } }
   activityIgnore: ['loginwindow', 'ScreenSaverEngine', 'Private'],
   notion: { workerUrl: '', appKey: '', links: [], journal: null, autoSync: false },
-  gcal: { clientId: '', calendars: null, blockCalendar: 'primary', workStart: '09:00', workEnd: '18:00' },
+  gcal: { clientId: '', calendars: null, blockCalendar: 'primary', workStart: '09:00', workEnd: '18:00', mac: false },
   sync: { url: '', anonKey: '', email: '', session: null, state: {}, auto: true },
-  atlas: { lastImport: null, lastResult: null, lastError: null, exportedAt: null },
+  atlas: { lastImport: null, lastResult: null, lastError: null, exportedAt: null, off: false },
   ai: { available: false },
 };
 

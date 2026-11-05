@@ -13,7 +13,7 @@ JourneyMan keeps working offline on each device and syncs through your own Supab
 
 3. **Allow your app's address.** Go to Authentication → URL Configuration and set:
    - **Site URL:** where JourneyMan runs, e.g. `https://vrs-3110.github.io/JourneyMan/`
-   - **Redirect URLs:** add the same address, plus `http://localhost:8000` for local use.
+   - **Redirect URLs:** add the same address, plus `http://localhost:8000` for local use, and `journeyman://localhost/index.html` for the Mac app.
 
 4. **Show the 6-digit code in the sign-in email.** This lets you sign in inside the installed app, where tapping a link would open your browser instead. Go to Authentication → Emails → Magic Link and add this line to the template:
 

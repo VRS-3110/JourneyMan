@@ -129,22 +129,23 @@ export function activitySection(store, ui) {
   </section>`;
 }
 
-export function atlasSection(store, ui, { canPick = false } = {}) {
+export function atlasSection(store, ui, { canPick = false, native = false } = {}) {
   const a = store.state.settings.atlas || {};
   const linked = store.state.tasks.filter((t) => t.atlasId);
   const open = linked.filter((t) => !t.done).length;
   const maps = store.state.projects.filter((p) => p.atlasMapId).length;
   const status = ui.atlas === 'granted' ? `${icon('ok')} Connected to the <b>${esc(ui.atlasHandle?.name || 'atlas')}</b> folder.`
+    : native ? 'Not connected. Connect to use Documents/JourneyMan/atlas.'
     : ui.atlas === 'prompt' ? `${icon('pause')} The Atlas folder needs reconnecting (the browser asks again after a restart).`
       : 'Not connected.';
   const buttons = !canPick ? ''
     : ui.atlas === 'granted' ? `<button type="button" class="btn small" data-atlas="sync">${icon('sync')} Sync now</button>
       <button type="button" class="btn small ghost danger" data-atlas="disconnect">Disconnect</button>`
-      : ui.atlas === 'prompt' ? '<button type="button" class="btn small primary" data-atlas="reconnect">Reconnect</button>'
+      : ui.atlas === 'prompt' && !native ? '<button type="button" class="btn small primary" data-atlas="reconnect">Reconnect</button>'
         : '<button type="button" class="btn small primary" data-atlas="connect">Connect the Atlas folder</button>';
   return `<section class="card" id="atlas">
     <h2 class="card-title">${icon('map')} Atlas</h2>
-    <p class="card-sub">Tasks from your Atlas mind maps show up here, with a project for each map. Names, dates and estimates come from Atlas. Done and time go both ways: tick a task in either app, and focus time from Atlas lands in Time as deep work. The two apps share the folder <code>Documents/JourneyMan/atlas</code>. In Atlas, open Settings → JourneyMan and turn on sharing, then connect that folder here. More in <code>docs/ATLAS.md</code>.</p>
+    <p class="card-sub">Tasks from your Atlas mind maps show up here, with a project for each map. Names, dates and estimates come from Atlas. Done and time go both ways: tick a task in either app, and focus time from Atlas lands in Time as deep work. The two apps share the folder <code>Documents/JourneyMan/atlas</code>. In Atlas, open Settings → JourneyMan and turn on sharing${native ? '. This app uses that folder by itself' : ', then connect that folder here'}. More in <code>docs/ATLAS.md</code>.</p>
     <p>${status}${linked.length ? ` ${linked.length} linked task${linked.length === 1 ? '' : 's'} (${open} open) from ${maps} map${maps === 1 ? '' : 's'}.` : ''}</p>
     ${ui.atlas === 'granted' && ui.atlasWaiting ? '<p class="hint">No tasks.json in that folder yet. Turn on sharing in Atlas → Settings → JourneyMan, or check you picked Documents/JourneyMan/atlas.</p>' : ''}
     ${a.lastImport ? `<p class="muted">Last read ${ago(a.lastImport)}: ${esc(summaryText(a.lastResult))}${a.exportedAt ? ` · Atlas wrote it ${ago(a.exportedAt)}` : ''}</p>` : ''}

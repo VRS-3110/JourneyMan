@@ -283,3 +283,28 @@ Atlas, the Mac mind-mapping app, and JourneyMan now share tasks through `~/Docum
 - **Round trip with Atlas's own code:** Atlas's Swift was compiled with Swift 6.0 on Linux and wrote a real `tasks.json`. This app's modules then imported it, ticked a task, logged 30 minutes and wrote `journeyman.json`. Atlas applied that as one undo step (done, and 30 minutes). Reading again on both sides changed nothing.
 - **Not tried yet:** Atlas's SwiftUI parts on a Mac, and Chrome asking for a real folder.
 
+## After that: the Mac app (5 Nov 2026)
+
+JourneyMan can now be a real Mac app. `mac/Scripts/make-dmg.sh` builds `JourneyMan-1.0.dmg`, using the same tools and build approach as Atlas (Command Line Tools only, signed on your Mac). Guide: [`mac/README.md`](../mac/README.md).
+
+### What it is
+
+- **A native window around the same pages.** The app serves `index.html`, `css/` and `js/` from inside itself at `journeyman://localhost/`. The web version and the app are one codebase.
+- **Folders without asking.** `js/native.js` gives the page folder handles shaped like Chrome's, backed by native code. The activity folder and the Atlas folder are then read and written with the same code as in Chrome. Native code only reaches `~/Documents/JourneyMan`.
+- **Calendars from the Mac (EventKit).** Google blocks its sign-in inside apps, so the app reads the calendars the Calendar app shows. Google is included once it's added in Internet Accounts. `js/native.js` presents them as the Google Calendar API, so meetings, free time, Next up, the forecast and time blocks all work unchanged. A time block carries a `journeyman://` link back to its task.
+- **Links.** `journeyman://…#task/<id>` opens the app on that task, so Atlas's Open in JourneyMan works. Notion, Atlas and web links open in their own apps. Downloads ask where to save. File pickers and confirm dialogs are native.
+- **Menus.** The usual Edit commands, Reload, zoom, full screen, and File ▸ Open JourneyMan Folder. Closing the window keeps the app running.
+
+### Checked
+
+- **Unit tests:** 89 in all. 6 are new in `test/native.test.js`:
+  - Folder handles (read, write, missing files, making folders).
+  - Time-block links.
+  - Mac events read as Google events.
+  - `readCalendar` on the Mac's calendars.
+  - Making and removing a time block.
+- **Browser run of the app mode:** Chromium with a stand-in for the native side. The Atlas folder connected by itself, imported a task and wrote `journeyman.json`. The calendar card had no Google fields, connected, and read a meeting. Block time made an event in the default calendar with the task link, and Remove deleted it. The journal read the activity folder with no button. No console errors.
+- **Swift:** `Browser.swift` and `Bridge.swift` compiled with Swift 6.0 on Linux against stand-ins for AppKit, WebKit and EventKit. This catches the code's own mistakes, not differences from Apple's real frameworks. `JourneyManApp.swift` (menus) needs the Objective-C runtime, so it was only read through.
+- **Atlas:** Open in JourneyMan now accepts the app's `journeyman://` address. All 152 tests pass.
+- **Not tried yet:** building and running on a Mac. That covers the real WebKit (serving pages from `journeyman://` and keeping IndexedDB there), the Calendar and Documents prompts, and the DMG.
+

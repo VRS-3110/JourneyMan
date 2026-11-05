@@ -40,7 +40,7 @@ Every call must carry `Authorization: Bearer <APP_KEY>`, and browsers may call o
 
    For `APP_KEY`, use a long random password, e.g. the output of `openssl rand -hex 24`. `ANTHROPIC_API_KEY` is only needed for the Claude features.
 
-4. **Allow your app's address.** Edit `ALLOWED_ORIGINS` in `wrangler.toml` to include where JourneyMan runs (your GitHub Pages address, `http://localhost:8000`), then deploy again.
+4. **Allow your app's address.** Edit `ALLOWED_ORIGINS` in `wrangler.toml` to include where JourneyMan runs (your GitHub Pages address, `http://localhost:8000`, and `journeyman://localhost` for the Mac app), then deploy again.
 
 5. **Connect JourneyMan.** In JourneyMan → Connections, paste the worker's URL and your `APP_KEY`, then choose **Test connection**.
 

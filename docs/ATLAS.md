@@ -25,6 +25,8 @@ Nothing goes online. The two apps share one folder on your Mac:
 
 After Chrome restarts, it may ask again for the folder. Choose **Reconnect** in Connections.
 
+**The JourneyMan Mac app** (`mac/`) needs no step 2. It uses the folder by itself, and Atlas's **Open in JourneyMan** opens the app.
+
 **Safari:** Safari can't keep a folder connected. In Connections ▸ Atlas, use
 **Import tasks.json…** to read Atlas's file. Then use **Save journeyman.json** and put the
 file into the same folder for Atlas to read.
