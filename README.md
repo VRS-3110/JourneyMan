@@ -25,11 +25,13 @@ Everything works locally with no accounts. The optional connections (Notion, Cla
 | --- | --- |
 | **Capture** (`N`) | Quick add reads `#project @area ~30m tomorrow 3pm due fri !!` and Notion links, and shows what it understood before you press Enter. **✨ Brain dump** turns a messy paragraph into separate tasks with Claude. |
 | **Organise** | Inbox, Today, Upcoming, Anytime and Logbook. Areas → projects → tasks. A detail pane for every field. `⌘K` to jump anywhere, and `?` for all shortcuts. |
+| **Repeat** | `every mon wed fri`, `every 2 weeks`, `every month`, `daily`, `weekdays`, or the Repeat control in a task's details (including "count from when I finish" and an end date). Finishing one creates the next. Upcoming shows the ones still to come, and the forecast counts them. |
 | **Track time** (`S`) | A one-tap timer pinned in the sidebar, with deep-work tagging and a "still working?" check after 3 hours. Manual logs (`45m`, `1h30m`). Planned against actual on every task. A daily recap, and a **Time** view with weekly charts and CSV export. |
 | **See what matters** | **Next up** on Today ranks tasks by urgency, importance, fit and staleness, and says why. Project health (on track, at risk, stalled, overdue, no next action). The **Insights** view has a 4-week workload forecast, time by area against targets, a focus heatmap, an urgent/important 2×2 and an estimate check. |
 | **Journal** | The **Mac helper** records which app and window you're in, kept only on your Mac. The **Journal** view matches that to your work, adds it to Time, compares plan with reality, moves unfinished tasks forward, and writes the day's entry (optionally with Claude). |
 | **Weekly review** | A guided six-step review with a streak, a DUE badge, and an optional reflection drafted by Claude. Sent to your Notion journal if you like. |
 | **Notion** | Links on any task, project or area that open in the Notion app. CSV import. **Two-way sync** with Notion task databases, with time written back. Journal entries and reviews added to your Notion journal. |
+| **Google Calendar** | Meetings come out of your daily hours. Next up prefers tasks that fit before your next meeting, the forecast subtracts meeting time, Today shows your day's events, and the journal lists your meetings. **Block time** puts a task into your first free slot. |
 | **Devices** | Sync across your Mac and phone through your own Supabase project. Offline-first, and the newer edit wins. |
 
 ### Quick-add syntax
@@ -44,6 +46,7 @@ Everything works locally with no accounts. The optional connections (Notion, Cla
 | `due fri`, `by dec 5` | Deadline |
 | `!`, `!!`, `!!!` | Priority |
 | a Notion link | Attaches the page |
+| `every mon wed fri`, `every 3 days`, `every other week`, `every month`, `daily`, `weekdays` | Repeat |
 | `\word` | Keeps a word as text, e.g. `Buy \sun cream` |
 
 ## Connections
@@ -53,6 +56,7 @@ All of these are optional. Set them up in JourneyMan → Connections.
 | Connection | What it needs | Guide |
 | --- | --- | --- |
 | **Bridge** (for Notion sync and Claude) | A free Cloudflare Worker that holds your Notion token and Anthropic API key | [`worker/README.md`](worker/README.md) |
+| **Google Calendar** | Your own free Google OAuth client ID. No server needed. | [`docs/GOOGLE_CALENDAR.md`](docs/GOOGLE_CALENDAR.md) |
 | **Mac activity** | A tiny launchd helper (`bash install.sh`) | [`mac-agent/README.md`](mac-agent/README.md) |
 | **Device sync** | A free Supabase project | [`supabase/README.md`](supabase/README.md) |
 
@@ -74,6 +78,9 @@ js/model.js           data and views (PARA, time entries, journals, tombstones)
 js/parse.js           dates and the quick-add parser
 js/reports.js         day and week reports, CSV
 js/insights.js        Next up ranking, project health, forecasts
+js/recurrence.js      repeat rules: parsing, next dates, descriptions
+js/calendar.js        meetings, free time and slots (no network)
+js/gcal.js            Google sign-in and Calendar API, from the browser
 js/activity.js        Mac activity → sessions → matches → time and journal
 js/notion.js          Notion mapping and two-way sync (through the bridge)
 js/sync.js            Supabase device sync

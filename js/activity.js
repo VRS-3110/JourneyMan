@@ -8,6 +8,7 @@
 
 import { slugify } from './parse.js';
 import { localDay } from './reports.js';
+import { eventsOn, busyIntervals, meetingMinutes } from './calendar.js';
 
 const SAMPLE_SECONDS = 30;
 
@@ -188,6 +189,13 @@ export function journalText(store, day, summary, plan, dayReport) {
     lines.push(`At the Mac ${hm(summary.total)}, ${clock(summary.first)}–${clock(summary.last)}. ${hm(summary.matchedMinutes)} of it matched to your work.`);
     if (summary.matched.length) lines.push(`Most time: ${summary.matched.slice(0, 3).map((m) => `${m.name} (${hm(m.minutes)})`).join(', ')}.`);
     if (summary.byApp.length) lines.push(`Apps: ${summary.byApp.slice(0, 4).map((a) => `${a.app} ${hm(a.minutes)}`).join(', ')}.`);
+  }
+  if (store.state.calendar) {
+    const meetings = eventsOn(store.state.calendar.events, day).filter((e) => !e.allDay && e.busy !== false);
+    if (meetings.length) {
+      const mins = meetingMinutes(busyIntervals(meetings), day, { workStart: '00:00', workEnd: '23:59' });
+      lines.push(`Meetings: ${hm(mins)} (${meetings.slice(0, 4).map((e) => e.title).join(', ')}${meetings.length > 4 ? ` and ${meetings.length - 4} more` : ''}).`);
+    }
   }
   if (dayReport && dayReport.total) lines.push(`Time tracked: ${hm(dayReport.total)}${dayReport.deep ? `, ${hm(dayReport.deep)} deep work` : ''}.`);
   const done = plan.filter((p) => p.state === 'done').map((p) => p.task.title);

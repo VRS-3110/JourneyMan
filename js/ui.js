@@ -28,6 +28,7 @@ export const ICONS = {
   warn: '<path d="M8 2.2L14.3 13H1.7z"/><path d="M8 6.5v3M8 11.3v.2"/>',
   ok: '<circle cx="8" cy="8" r="6"/><path d="M5.5 8.2l1.7 1.7 3.3-3.6"/>',
   pause: '<circle cx="8" cy="8" r="6"/><path d="M6.5 5.8v4.4M9.5 5.8v4.4"/>',
+  repeat: '<path d="M3 7.5V7a4 4 0 0 1 4-4h5.5"/><path d="M10.5 1l2 2-2 2"/><path d="M13 8.5V9a4 4 0 0 1-4 4H3.5"/><path d="M5.5 15l-2-2 2-2"/>',
 };
 export const icon = (name) => `<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">${ICONS[name]}</svg>`;
 

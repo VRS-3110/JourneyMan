@@ -3,6 +3,8 @@
 
 import { addDays, daysBetween, formatDay } from './parse.js';
 import { weekStart, localDay, bucket } from './reports.js';
+import { busyIntervals, meetingMinutes, nextMeeting } from './calendar.js';
+import { occurrencesBetween } from './recurrence.js';
 
 const clamp = (x) => Math.max(0, Math.min(1, x));
 const DEFAULT_ESTIMATE = 30; // minutes assumed for a task with no estimate, in forecasts
@@ -36,12 +38,21 @@ export function idleDays(store, projectId) {
   return last ? Math.max(0, daysBetween(localDay(last), store.today())) : 0;
 }
 
-/* Minutes still free today: your hours minus what you've tracked so far. */
+/* Minutes still free today: your hours, minus what you've tracked so far and the meetings still ahead. */
 export function freeToday(store) {
   const day = store.today();
   const tracked = store.entriesBetween(day, day).reduce((s, e) => s + store.entryMinutes(e), 0);
-  return Math.max(store.state.settings.hoursPerDay * 60 - tracked, 0);
+  const meetingsLeft = store.state.calendar
+    ? meetingMinutes(busyIntervals(store.state.calendar.events), day, store.state.settings.gcal, store.now().getTime()) : 0;
+  return Math.max(store.state.settings.hoursPerDay * 60 - tracked - meetingsLeft, 0);
 }
+
+/* The gap before your next meeting today, when a calendar is connected. */
+export function gapBeforeMeeting(store) {
+  if (!store.state.calendar) return null;
+  return nextMeeting(store.state.calendar.events, store.now().getTime(), store.state.settings.gcal);
+}
+const clock = (iso) => { const d = new Date(iso); return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
 
 /*
   score = 3·urgency + 2·importance + fit + staleness, each part 0–1.
@@ -50,7 +61,7 @@ export function freeToday(store) {
     fit        whether the (adjusted) estimate fits the time you have
     staleness  how long the project has gone untouched
 */
-export function scoreTask(store, t, { freeMinutes = freeToday(store) } = {}) {
+export function scoreTask(store, t, { freeMinutes = freeToday(store), gap = gapBeforeMeeting(store) } = {}) {
   const today = store.today();
   const p = store.projectOf(t);
   const reasons = [];
@@ -82,9 +93,16 @@ export function scoreTask(store, t, { freeMinutes = freeToday(store) } = {}) {
   const est = t.estimate ? store.adjusted(t.estimate) : null;
   let fit = 0.5;
   if (est) {
-    fit = est <= freeMinutes ? 1 : clamp(freeMinutes / est);
-    if (est <= freeMinutes) reasons.push(`Fits in your ${hm(freeMinutes)} left`);
-    else if (freeMinutes > 0) reasons.push(`Needs ${hm(est)}, more than you have left`);
+    if (gap && gap.event && !gap.inMeeting && est <= gap.minutes) {
+      fit = 1;
+      reasons.push(`Fits before ${gap.event.title} at ${clock(gap.event.start)}`);
+    } else if (est <= freeMinutes) {
+      fit = gap && gap.event ? 0.75 : 1; // fits today, but not in one go before the next meeting
+      reasons.push(`Fits in your ${hm(freeMinutes)} left`);
+    } else {
+      fit = clamp(freeMinutes / est) * 0.6;
+      if (freeMinutes > 0) reasons.push(`Needs ${hm(est)}, more than you have left`);
+    }
   }
 
   let staleness = 0;
@@ -188,12 +206,28 @@ export function workloadForecast(store, weeks = 4) {
     const start = addDays(first, 7 * i);
     const end = addDays(start, 6);
     const daysLeft = i === 0 ? daysBetween(today, end) + 1 : 7;
-    out.push({ start, end, planned: 0, unestimated: 0, available: s.hoursPerDay * 60 * s.daysPerWeek * (daysLeft / 7) });
+    let meetings = 0;
+    if (store.state.calendar) {
+      const iv = busyIntervals(store.state.calendar.events);
+      for (let d = 0; d < 7; d++) {
+        const day = addDays(start, d);
+        if (day >= today) meetings += meetingMinutes(iv, day, s.gcal);
+      }
+    }
+    const hours = s.hoursPerDay * 60 * s.daysPerWeek * (daysLeft / 7);
+    out.push({ start, end, planned: 0, unestimated: 0, meetings, available: Math.max(hours - meetings, 0) });
   }
   const lastDay = out[out.length - 1].end;
   const weekOf = (day) => out.find((w) => day >= w.start && day <= w.end);
   for (const t of activeTasks(store)) {
     const mins = store.adjusted(t.estimate || DEFAULT_ESTIMATE);
+    // Future occurrences of a repeating task count too.
+    if (t.repeat && (t.when || t.deadline)) {
+      for (const day of occurrencesBetween(t.repeat, t.when || t.deadline, lastDay)) {
+        const w = weekOf(day);
+        if (w) w.planned += mins;
+      }
+    }
     if (t.when) {
       const w = weekOf(t.when < today ? today : t.when);
       if (w) { w.planned += mins; if (!t.estimate) w.unestimated++; }

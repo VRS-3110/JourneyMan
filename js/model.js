@@ -2,6 +2,8 @@
 // Built on PARA: areas hold projects, projects hold tasks. Anything not yet sorted sits in the inbox.
 
 import { todayISO, daysBetween, addDays, parseQuickAdd } from './parse.js';
+import { nextOccurrence, firstOccurrence, anchorRule, occurrencesBetween } from './recurrence.js';
+import { busyIntervals, meetingMinutes } from './calendar.js';
 
 /* Area colours are slots of a validated, colour-blind-checked categorical palette (fixed order).
    The hex for each slot lives in css/app.css as --c1…--c8, with its own light and dark steps. */
@@ -17,6 +19,7 @@ export const DEFAULT_SETTINGS = {
   activityRules: [], // { id, field: 'app' | 'title', contains, target: { kind: 'task' | 'project' | 'area', id } }
   activityIgnore: ['loginwindow', 'ScreenSaverEngine', 'Private'],
   notion: { workerUrl: '', appKey: '', links: [], journal: null, autoSync: false },
+  gcal: { clientId: '', calendars: null, blockCalendar: 'primary', workStart: '09:00', workEnd: '18:00' },
   sync: { url: '', anonKey: '', email: '', session: null, state: {}, auto: true },
   ai: { available: false },
 };
@@ -32,7 +35,7 @@ export function createStore(persist = {}) {
   const remove = persist.remove || (() => {});
   const now = persist.now || (() => new Date());
 
-  const state = { areas: [], projects: [], tasks: [], entries: [], journals: [], activity: [], tombstones: [], settings: { ...DEFAULT_SETTINGS } };
+  const state = { areas: [], projects: [], tasks: [], entries: [], journals: [], activity: [], tombstones: [], calendar: null, settings: { ...DEFAULT_SETTINGS } };
   const listeners = new Set();
   const emit = () => listeners.forEach((fn) => fn());
   const today = () => todayISO(now());
@@ -80,6 +83,8 @@ export function createStore(persist = {}) {
       state.settings.notion = { ...DEFAULT_SETTINGS.notion, ...(state.settings.notion || {}) };
       state.settings.sync = { ...DEFAULT_SETTINGS.sync, ...(state.settings.sync || {}) };
       state.settings.ai = { ...DEFAULT_SETTINGS.ai, ...(state.settings.ai || {}) };
+      state.settings.gcal = { ...DEFAULT_SETTINGS.gcal, ...(state.settings.gcal || {}) };
+      state.calendar = data.calendar || null;
       emit();
     },
     snapshot() {
@@ -87,6 +92,7 @@ export function createStore(persist = {}) {
       if (copy.settings.notion) copy.settings.notion.appKey = ''; // keys stay on this Mac
       if (copy.settings.sync) copy.settings.sync = { ...copy.settings.sync, session: null };
       if (copy.settings.ai) copy.settings.ai = { ...copy.settings.ai, appKey: '' };
+      delete copy.calendar; // meetings are re-read from Google, not backed up
       return copy;
     },
     /* Writes a record that came from elsewhere (Notion, another device) without re-stamping it. */
@@ -181,11 +187,18 @@ export function createStore(persist = {}) {
       let projectId = parsed.projectId;
       if (parsed.newProject) projectId = store.addProject(parsed.newProject, { areaId: areaId || context.areaId || null }).id;
       if (!projectId && !areaId) { projectId = context.projectId || null; areaId = context.areaId || null; }
-      const when = parsed.when || context.when || null;
+      let when = parsed.when || context.when || null;
+      let repeat = null;
+      if (parsed.repeat) {
+        // "every mon" typed on a Wednesday starts next Monday, not today.
+        // A repeating deadline ("every month due 30th") goes by the deadline, not the view's day.
+        if (!parsed.when) when = parsed.deadline ? null : firstOccurrence(parsed.repeat, today());
+        repeat = anchorRule(parsed.repeat, when || parsed.deadline);
+      }
       return store.addTask({
         title: parsed.title, projectId, areaId: projectId ? null : areaId,
         when, time: parsed.time, deadline: parsed.deadline, estimate: parsed.estimate, priority: parsed.priority,
-        notionUrl: parsed.notionUrl,
+        notionUrl: parsed.notionUrl, repeat,
       });
     },
     updateTask(id, fields) {
@@ -197,9 +210,26 @@ export function createStore(persist = {}) {
       if (t.inbox && (fields.projectId || fields.areaId || fields.when || fields.deadline)) next.inbox = false;
       if (fields.done === true && !t.done) next.doneAt = stamp();
       if (fields.done === false) next.doneAt = null;
+      if (fields.done === true && !t.done && next.repeat && !next.nextId) next.nextId = spawnNext(next);
+      if (fields.done === false && t.done && t.nextId) { dropPristine(t.nextId); next.nextId = null; }
       put('task', next);
       emit();
       return next;
+    },
+    /* Sets, changes or stops (null) a task's repeat. A task with no date gets its first occurrence. */
+    setRepeat(id, rule) {
+      const t = store.task(id);
+      if (!t) return null;
+      if (!rule) return store.updateTask(id, { repeat: null });
+      const when = t.when || (t.deadline ? null : firstOccurrence(rule, today()));
+      return store.updateTask(id, { repeat: anchorRule(rule, when || t.deadline), when, seriesId: t.seriesId || t.id });
+    },
+    /* Undo of a completion: puts the task back and removes the next occurrence it created, if untouched. */
+    undoComplete(before) {
+      const cur = store.task(before.id);
+      if (cur && cur.nextId && cur.nextId !== before.nextId) dropPristine(cur.nextId);
+      put('task', before);
+      emit();
     },
     toggleDone(id) {
       const t = store.task(id);
@@ -389,6 +419,30 @@ export function createStore(persist = {}) {
       }
       return [...groups.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([day, tasks]) => ({ day, tasks: tasks.sort(byPlan) }));
     },
+    /* Future occurrences of repeating tasks in the next `days` days (not yet created), for Upcoming. */
+    upcomingRepeats(days = 14) {
+      const d = today();
+      const end = addDays(d, days);
+      const out = [];
+      for (const t of state.tasks) {
+        if (t.done || !t.repeat) continue;
+        const from = t.when || t.deadline;
+        if (!from) continue;
+        for (const day of occurrencesBetween(t.repeat, from, end)) if (day > d) out.push({ day, task: t });
+      }
+      return out;
+    },
+    /* ---------- Google Calendar cache ---------- */
+    setCalendar(cal) {
+      state.calendar = cal;
+      if (cal) save('meta', { id: 'calendar', ...cal }); else remove('meta', 'calendar');
+      emit();
+    },
+    /* Meeting minutes on a day, inside your work hours (from the cached calendar). */
+    meetings(day) {
+      if (!state.calendar) return 0;
+      return meetingMinutes(busyIntervals(state.calendar.events || []), day, state.settings.gcal);
+    },
     /* Sorted tasks with no date, ready to pick up any time. */
     anytime() {
       return state.tasks.filter((t) => !t.done && !t.inbox && !t.when && !isParked(t)).sort(byPlan);
@@ -421,7 +475,8 @@ export function createStore(persist = {}) {
     capacity() {
       const list = store.todayList();
       const planned = list.reduce((s, t) => s + (t.estimate || 0), 0);
-      return { planned, available: state.settings.hoursPerDay * 60, unestimated: list.filter((t) => !t.estimate).length, count: list.length };
+      const meetings = store.meetings(today());
+      return { planned, available: Math.max(state.settings.hoursPerDay * 60 - meetings, 0), meetings, unestimated: list.filter((t) => !t.estimate).length, count: list.length };
     },
     counts() {
       return { inbox: store.inbox().length, today: store.todayList().length };
@@ -442,6 +497,35 @@ export function createStore(persist = {}) {
       return store.area(p ? p.areaId : t.areaId);
     },
   };
+
+  /*
+    Creates the next occurrence of a repeating task that was just completed, and returns its id.
+    The id is the series id plus the date, so two devices completing the same occurrence offline
+    create the same next task and device sync merges them.
+  */
+  function spawnNext(t) {
+    const d = today();
+    const field = t.when ? 'when' : t.deadline ? 'deadline' : 'when';
+    const base = t.repeat.afterDone ? d : t[field] || d;
+    let next = nextOccurrence(t.repeat, base);
+    while (next && next < d) next = nextOccurrence(t.repeat, next); // don't pile up overdue copies
+    if (!next) return null; // the series has ended
+    const seriesId = t.seriesId || t.id;
+    const id = `${seriesId}@${next}`;
+    if (store.task(id)) return id;
+    const gap = t.when && t.deadline ? daysBetween(t.when, t.deadline) : null;
+    put('task', {
+      id, seriesId, title: t.title, notes: t.notes, projectId: t.projectId, areaId: t.areaId,
+      when: field === 'when' ? next : null, time: t.time, deadline: field === 'deadline' ? next : gap != null ? addDays(next, gap) : null,
+      estimate: t.estimate, priority: t.priority, notionUrl: null, repeat: t.repeat,
+      done: false, doneAt: null, inbox: false, createdAt: stamp(), order: nextOrder(),
+    });
+    return id;
+  }
+  function dropPristine(id) {
+    const n = store.task(id);
+    if (n && !n.done) drop('task', id, { tombstone: true });
+  }
 
   /* Tasks in a someday or archived project stay out of Anytime. */
   function isParked(t) {

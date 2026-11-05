@@ -1,6 +1,8 @@
 // JourneyMan — dates and the quick-add parser. No DOM here, so it runs in Node tests too.
 // Dates are local calendar days stored as 'YYYY-MM-DD' strings.
 
+import { parseRepeatAt } from './recurrence.js';
+
 const pad = (n) => String(n).padStart(2, '0');
 
 export function toISO(d) {
@@ -167,12 +169,13 @@ export function notionAppUrl(url) {
     3pm / 15:00 after a date (or alone, meaning today)                    → time
     \word keeps a word as text, e.g. "Buy \sun cream"
     a pasted Notion link is attached to the task
+    every day / every mon wed fri / every 2 weeks / every month / daily / weekly / weekdays → repeats
 */
 export function parseQuickAdd(text, { today = todayISO(), projects = [], areas = [] } = {}) {
   const tokens = String(text).trim().split(/\s+/).filter(Boolean);
   const out = {
     title: '', projectId: null, areaId: null, newProject: null, newArea: null,
-    when: null, time: null, deadline: null, estimate: null, priority: 0, notionUrl: null,
+    when: null, time: null, deadline: null, estimate: null, priority: 0, notionUrl: null, repeat: null,
   };
   const keep = [];
   let datePhrase = null; // the words that set "when", in case a later date replaces them
@@ -197,6 +200,14 @@ export function parseQuickAdd(text, { today = todayISO(), projects = [], areas =
     if (est != null) { out.estimate = est; continue; }
     if (/^!{1,3}$/.test(tok)) { out.priority = tok.length; continue; }
     if (/^!([1-3])$/.test(tok)) { out.priority = Number(tok[1]); continue; }
+
+    // Repeats: "every mon wed", "every 2 weeks", "daily"… (before dates, so "every fri" isn't read as a date)
+    if (low === 'every' && i + 1 < tokens.length) {
+      const r = parseRepeatAt(tokens, i + 1);
+      if (r) { out.repeat = r.rule; i += r.used; continue; }
+    }
+    const single = parseRepeatAt(tokens, i, { afterEvery: false });
+    if (single) { out.repeat = single.rule; continue; }
 
     if ((low === 'due' || low === 'by') && i + 1 < tokens.length) {
       const d = parseDateAt(tokens, i + 1, today);

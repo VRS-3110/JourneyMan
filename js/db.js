@@ -45,11 +45,13 @@ export async function openStorage() {
   const settings = meta.find((m) => m.id === 'settings');
   if (settings) delete settings.id;
   const tombstones = (meta.find((m) => m.id === 'tombstones') || {}).list || [];
+  const calendar = meta.find((m) => m.id === 'calendar') || null;
+  if (calendar) delete calendar.id;
 
   const onError = (err) => console.error('JourneyMan: could not save.', err);
   return {
     ok: true,
-    data: { areas, projects, tasks, entries, journals, activity, tombstones, settings },
+    data: { areas, projects, tasks, entries, journals, activity, tombstones, settings, calendar },
     /* Small values that aren't records, such as the activity folder handle. */
     async getMeta(id) {
       return new Promise((resolve) => {

@@ -20,6 +20,9 @@ import { callAi } from './ai.js';
 import { supabase, syncOnce, sessionFromHash, toSession, ensureToken } from './sync.js';
 import { nextUp } from './insights.js';
 import { findByName } from './parse.js';
+import { describeRepeat } from './recurrence.js';
+import { eventsOn, findSlot, normalizeEvents } from './calendar.js';
+import { authorize, revoke, tokenValid, calendarApi, readCalendar, blockBody } from './gcal.js';
 
 const VIEWS = {
   inbox: { title: 'Inbox', icon: 'inbox' },
@@ -193,7 +196,7 @@ function renderMeta() {
     const over = c.planned > c.available;
     el.innerHTML = c.count ? `<div class="capacity${over ? ' over' : ''}">
       <div class="cap-bar" role="img" aria-label="${formatMinutes(c.planned) || '0m'} planned of ${formatMinutes(c.available)}"><i style="width:${(pct * 100).toFixed(1)}%"></i></div>
-      <span>${icon('clock')} <b>${formatMinutes(c.planned) || '0m'}</b> planned of ${formatMinutes(c.available)}${over ? ` · <b class="late-text">${formatMinutes(c.planned - c.available)} over</b>` : ''}${c.unestimated ? ` · ${c.unestimated} without an estimate` : ''}</span></div>` : '';
+      <span>${icon('clock')} <b>${formatMinutes(c.planned) || '0m'}</b> planned of ${formatMinutes(c.available)}${c.meetings ? ` free (${formatMinutes(store.state.settings.hoursPerDay * 60)} minus ${formatMinutes(Math.round(c.meetings))} of meetings)` : ''}${over ? ` · <b class="late-text">${formatMinutes(c.planned - c.available)} over</b>` : ''}${c.unestimated ? ` · ${c.unestimated} without an estimate` : ''}</span></div>` : '';
   } else if (r.view === 'project') {
     const s = store.projectStats(r.id);
     $('#p-ring')?.style.setProperty('--p', s.progress);
@@ -236,6 +239,8 @@ function taskRow(t, opts = {}) {
   if (isRunning) chips.push(`<span class="chip running"><i class="pulse" aria-hidden="true"></i><span class="run-clock" data-start="${run.start}">${clockText(run.start)}</span></span>`);
   if (tracked >= 1 && !isRunning) chips.push(`<span class="chip${t.estimate && tracked > t.estimate ? ' late' : ''}" title="Tracked${t.estimate ? ' of estimate' : ''}">${icon('time')}${hours(tracked)}${t.estimate ? ` / ${hours(t.estimate)}` : ''}</span>`);
   else if (t.estimate) chips.push(`<span class="chip">${icon('clock')}${formatMinutes(t.estimate)}</span>`);
+  if (t.repeat) chips.push(`<span class="chip" title="${esc(describeRepeat(t.repeat))}">${icon('repeat')}${esc(describeRepeat(t.repeat, { short: true }))}</span>`);
+  if (t.block && !t.done) chips.push(`<span class="chip" title="Time blocked in your calendar">${icon('upcoming')}${hmOf(t.block.start)}</span>`);
   if (t.notes) chips.push(`<span class="chip icon-only" title="Has notes">${icon('note')}</span>`);
   if (t.notionUrl) chips.push(`<a class="chip notion" href="${esc(notionAppUrl(t.notionUrl))}" title="Open in Notion" aria-label="Open in Notion">${icon('notion')}</a>`);
   const triage = opts.triage
@@ -282,6 +287,7 @@ function renderBody() {
     }
     case 'today': {
       html += nextUpPanel(store, ui, { ai: aiReady() });
+      html += calendarCard();
       const list = store.todayList();
       const late = list.filter((t) => (t.when && t.when < today) || (!t.when && t.deadline && t.deadline < today));
       const now = list.filter((t) => !late.includes(t));
@@ -320,10 +326,22 @@ function renderBody() {
       return;
     }
     case 'upcoming': {
-      const days = store.upcoming(14);
+      const groups = new Map(store.upcoming(14).map((g) => [g.day, { tasks: g.tasks, ghosts: [] }]));
+      for (const g of store.upcomingRepeats(14)) {
+        if (!groups.has(g.day)) groups.set(g.day, { tasks: [], ghosts: [] });
+        groups.get(g.day).ghosts.push(g.task);
+      }
+      const days = [...groups.entries()].sort(([a], [b]) => (a < b ? -1 : 1));
+      const ghostRow = (t) => `<li class="task ghost" data-ghost="${t.id}" title="Repeats: created when you finish the current one">
+        <span class="ghost-icon">${icon('repeat')}</span><div class="task-main"><span class="task-title">${esc(t.title)}</span>
+        <span class="task-meta"><span class="chip">${esc(describeRepeat(t.repeat, { short: true }))}</span>${t.estimate ? `<span class="chip">${icon('clock')}${formatMinutes(t.estimate)}</span>` : ''}</span></div></li>`;
       html = days.length
-        ? days.map(({ day, tasks }) => `<section class="day"><h2 class="list-head"><b>${formatDay(day, today)}</b> <span>${longDate(day)}</span></h2>${taskList(tasks, { when: false })}</section>`).join('')
-        : empty('Nothing scheduled', 'Add a date when you capture, like <code>fri</code> or <code>dec 5</code>.');
+        ? days.map(([day, g]) => {
+          const meet = store.meetings(day);
+          return `<section class="day"><h2 class="list-head"><b>${formatDay(day, today)}</b> <span>${longDate(day)}${meet ? ` · ${hours(meet)} of meetings` : ''}</span></h2>
+            ${g.tasks.length ? taskList(g.tasks, { when: false }) : ''}${g.ghosts.length ? `<ul class="tasks">${g.ghosts.map(ghostRow).join('')}</ul>` : ''}</section>`;
+        }).join('')
+        : empty('Nothing scheduled', 'Add a date when you capture, like <code>fri</code> or <code>dec 5</code>, or a repeat like <code>every mon</code>.');
       break;
     }
     case 'anytime': {
@@ -422,6 +440,7 @@ function renderDetail(force) {
         <span class="notion-row"><input type="url" data-field="notionUrl" value="${esc(t.notionUrl || '')}" placeholder="Paste a Notion link">
         <a class="btn small notion-open" href="${t.notionUrl ? esc(notionAppUrl(t.notionUrl)) : '#'}"${t.notionUrl ? '' : ' hidden'}>Open</a></span></label>
     </div>
+    ${repeatSection(t)}
     ${timeSection(t)}
     <div class="d-actions">
       ${t.inbox ? '<button type="button" class="btn small" data-action="keep">Keep without a project</button>' : ''}
@@ -522,6 +541,9 @@ function timeSection(t) {
     ${t.estimate ? `<span class="bar"><i style="width:${Math.min((tracked / t.estimate) * 100, 100).toFixed(1)}%;${over ? 'background:var(--late)' : ''}"></i></span>` : ''}
     <div class="d-time-actions">
       ${t.done ? '' : `<button type="button" class="btn small${isRunning ? ' primary' : ''}" data-action="timer">${icon(isRunning ? 'stop' : 'play')} ${isRunning ? `Stop <span class="run-clock" data-start="${run.start}">${clockText(run.start)}</span>` : 'Start timer'}</button>`}
+      ${store.state.calendar && !t.done ? (t.block
+        ? `<p class="block-line">${icon('upcoming')} Blocked ${esc(formatDay(todayOf(new Date(t.block.start)), store.today()))} ${hmOf(t.block.start)}–${hmOf(t.block.end)}${t.block.link ? ` · <a href="${esc(t.block.link)}" target="_blank" rel="noopener">Open</a>` : ''} <button type="button" class="btn small ghost" data-action="unblock">Remove</button></p>`
+        : `<button type="button" class="btn small" data-action="block">${icon('upcoming')} Block ${hours(t.estimate || 30)} in Calendar</button>`) : ''}
       <form class="log-form" data-log-form>
         <input type="text" name="mins" placeholder="Log 45m" aria-label="Time to log, like 45m or 1h30m" autocomplete="off">
         <input type="date" name="day" value="${store.today()}" max="${store.today()}" aria-label="Day">
@@ -568,8 +590,8 @@ function openTask(id) {
 /* ---------- phase 4: Notion bridge, journal, review ---------- */
 const bridgeReady = () => !!(store.state.settings.notion.workerUrl && store.state.settings.notion.appKey);
 const notionApi = () => makeApi(store.state.settings.notion);
-function connectionsExtra() { return ', device sync and Claude'; }
-function extraConnections() { return syncSection() + aiSection(); }
+function connectionsExtra() { return ', Google Calendar, device sync and Claude'; }
+function extraConnections() { return gcalSection() + syncSection() + aiSection(); }
 
 function setNotion(fields) {
   store.updateSettings({ notion: { ...store.state.settings.notion, ...fields } });
@@ -1076,6 +1098,206 @@ function syncSection() {
   </section>`;
 }
 
+/* ---------- repeating tasks ---------- */
+const PRESETS = [['', 'Never'], ['day', 'Every day'], ['weekday', 'Every weekday'], ['week', 'Every week'], ['2week', 'Every 2 weeks'], ['month', 'Every month'], ['year', 'Every year'], ['custom', 'Custom…']];
+const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
+const DAY_LETTER = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+const DAY_NAME = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function presetOf(r) {
+  if (!r) return '';
+  const days = r.days || [];
+  if (r.unit === 'day' && r.every === 1) return 'day';
+  if (r.unit === 'week' && r.every === 1 && days.length === 5 && [1, 2, 3, 4, 5].every((d) => days.includes(d))) return 'weekday';
+  if (r.unit === 'week' && days.length <= 1) return r.every === 1 ? 'week' : r.every === 2 ? '2week' : 'custom';
+  if (r.unit === 'month' && r.every === 1) return 'month';
+  if (r.unit === 'year' && r.every === 1) return 'year';
+  return 'custom';
+}
+
+function repeatSection(t) {
+  const r = t.repeat;
+  const base = t.when || t.deadline || store.today();
+  const wd = fromISO(base).getDay();
+  const p = presetOf(r);
+  const label = (v, l) => (v === 'week' ? `Every week on ${DAY_NAME[wd]}` : v === '2week' ? `Every 2 weeks on ${DAY_NAME[wd]}` : l);
+  return `<div class="d-repeat">
+    <label><span>${icon('repeat')} Repeat</span>
+      <select data-rep="preset">${PRESETS.map(([v, l]) => `<option value="${v}"${v === p ? ' selected' : ''}>${esc(label(v, l))}</option>`).join('')}</select></label>
+    ${r ? `<div class="rep-custom">
+      <span class="rep-every">Every <input type="number" min="1" max="99" data-rep="every" value="${r.every || 1}" aria-label="Every how many">
+        <select data-rep="unit" aria-label="Unit">${[['day', 'days'], ['week', 'weeks'], ['month', 'months'], ['year', 'years']].map(([v, l]) => `<option value="${v}"${v === r.unit ? ' selected' : ''}>${l}</option>`).join('')}</select></span>
+      ${r.unit === 'week' ? `<span class="rep-days" role="group" aria-label="Days of the week">${WEEK_ORDER.map((d) => `<button type="button" data-rep-day="${d}" aria-pressed="${!!(r.days || []).includes(d)}" title="${DAY_NAME[d]}">${DAY_LETTER[d]}</button>`).join('')}</span>` : ''}
+      <label class="check-field"><input type="checkbox" data-rep="after"${r.afterDone ? ' checked' : ''}> Count from when I finish</label>
+      <label class="rep-until">Until <input type="date" data-rep="until" value="${r.until || ''}"></label>
+      <p class="hint">${esc(describeRepeat(r))}. Finishing it creates the next one.</p>
+    </div>` : ''}
+  </div>`;
+}
+
+function onRepeat(el) {
+  const t = store.task(ui.selected);
+  if (!t) return;
+  const base = t.when || t.deadline || store.today();
+  const wd = fromISO(base).getDay();
+  let r = t.repeat ? { ...t.repeat } : null;
+  const kind = el.dataset.rep || (el.dataset.repDay != null ? 'day' : '');
+  if (kind === 'preset') {
+    const keep = r ? { afterDone: r.afterDone, until: r.until } : {};
+    const map = {
+      '': null, day: { unit: 'day', every: 1 }, weekday: { unit: 'week', every: 1, days: [1, 2, 3, 4, 5] },
+      week: { unit: 'week', every: 1, days: [wd] }, '2week': { unit: 'week', every: 2, days: [wd] },
+      month: { unit: 'month', every: 1 }, year: { unit: 'year', every: 1 },
+      custom: r || { unit: 'week', every: 1, days: [wd] },
+    };
+    r = map[el.value] ? { ...map[el.value], ...(el.value === 'custom' ? {} : keep) } : null;
+  } else if (!r) return;
+  else if (kind === 'every') r.every = Math.max(1, Math.min(99, Number(el.value) || 1));
+  else if (kind === 'unit') {
+    r.unit = el.value;
+    delete r.dom; delete r.month; delete r.anchor;
+    if (r.unit === 'week') r.days = [wd]; else delete r.days;
+  } else if (kind === 'after') r.afterDone = el.checked;
+  else if (kind === 'until') r.until = el.value || null;
+  else if (kind === 'day') {
+    const d = Number(el.dataset.repDay);
+    const days = new Set(r.days || []);
+    if (days.has(d)) days.delete(d); else days.add(d);
+    r.days = [...days].sort();
+    if (!r.days.length) delete r.days;
+  }
+  if (r && r.unit === 'week' && r.every > 1) delete r.anchor;
+  store.setRepeat(t.id, r);
+  renderDetail(true);
+}
+
+/* ---------- Google Calendar ---------- */
+const gcfg = () => store.state.settings.gcal;
+
+async function calendarToken(interactive, consent = false) {
+  if (tokenValid(ui.gcalToken)) return ui.gcalToken;
+  if (!interactive) return null;
+  const tok = await authorize(gcfg().clientId, { prompt: consent ? 'consent' : '' });
+  ui.gcalToken = tok;
+  storage.save('meta', { id: 'gcalToken', ...tok });
+  return tok;
+}
+
+/* Re-reads the next 4 weeks. `interactive` may open Google's sign-in (only call that from a click). */
+async function refreshCalendar({ interactive = false, consent = false } = {}) {
+  if (!gcfg().clientId || ui.gcalBusy) return;
+  ui.gcalBusy = true;
+  try {
+    const token = await calendarToken(interactive, consent);
+    if (!token) return;
+    const cal = await readCalendar(calendarApi(token), { selected: gcfg().calendars, days: 28 });
+    store.setCalendar(cal);
+    if (interactive) toast(`Calendar read: ${cal.events.filter((e) => !e.allDay).length} events in the next 4 weeks`);
+  } catch (err) {
+    if (err.status === 401) { ui.gcalToken = null; storage.remove('meta', 'gcalToken'); }
+    if (interactive) toast(`Google Calendar: ${err.message}`);
+  } finally {
+    ui.gcalBusy = false;
+    if (ui.route.view === 'connections') renderBody();
+  }
+}
+
+const hmOf = (iso) => { const d = new Date(iso); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+function agoText(iso) {
+  const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)} days ago`;
+}
+
+/* Today's meetings, on Today. */
+function calendarCard() {
+  const cal = store.state.calendar;
+  if (!cal) return gcfg().clientId ? `<section class="cal-card"><p class="hint">${icon('upcoming')} Google Calendar isn't read yet. <button type="button" class="link-btn" data-gcal="refresh">Read it now</button></p></section>` : '';
+  const day = store.today();
+  const evs = eventsOn(cal.events, day);
+  const now = Date.now();
+  const meet = store.meetings(day);
+  const rows = evs.filter((e) => !e.allDay).map((e) => {
+    const past = Date.parse(e.end) <= now, live = Date.parse(e.start) <= now && now < Date.parse(e.end);
+    return `<li class="${past ? 'past' : ''}${live ? ' live' : ''}${e.busy === false ? ' free' : ''}"><span class="ev-time">${hmOf(e.start)}–${hmOf(e.end)}</span><span class="ev-title">${esc(e.title)}</span>${live ? '<span class="ev-now">now</span>' : ''}${e.busy === false ? '<span class="muted">free</span>' : ''}</li>`;
+  }).join('');
+  const allDay = evs.filter((e) => e.allDay).map((e) => `<span class="chip">${esc(e.title)}</span>`).join('');
+  const stale = now - Date.parse(cal.fetchedAt) > 60 * 60_000;
+  return `<section class="cal-card">
+    <div class="cal-head"><h2>${icon('upcoming')} Calendar today</h2><span class="muted">${meet ? `${hours(meet)} of meetings in work hours` : 'No meetings'} · read ${agoText(cal.fetchedAt)}</span>
+      <button type="button" class="btn small ghost" data-gcal="refresh"${stale ? ' data-stale' : ''}>${icon('sync')} Refresh</button></div>
+    ${allDay ? `<div class="task-meta">${allDay}</div>` : ''}
+    ${rows ? `<ul class="cal-list">${rows}</ul>` : ''}
+  </section>`;
+}
+
+/* Puts a task's estimate (or 30 minutes) into the first free slot, as a calendar event. */
+async function blockTime(id) {
+  const t = store.task(id);
+  if (!t) return;
+  const mins = t.estimate || 30;
+  try {
+    const token = await calendarToken(true);
+    const slot = findSlot(store.state.calendar?.events || [], mins, Date.now(), gcfg());
+    if (!slot) { toast('No free slot in your work hours this week.'); return; }
+    const calId = gcfg().blockCalendar || 'primary';
+    const ev = await calendarApi(token).createEvent(calId, blockBody(t, slot, { appUrl: location.href.split('#')[0] }));
+    store.updateTask(id, { block: { eventId: ev.id, calendarId: calId, start: slot.start, end: slot.end, link: ev.htmlLink || null }, when: slot.day, time: hmOf(slot.start) });
+    const cal = store.state.calendar || { events: [], calendars: [], used: [], fetchedAt: new Date().toISOString() };
+    store.setCalendar({ ...cal, events: [...cal.events, ...normalizeEvents([ev], calId, 'JourneyMan')].sort((a, b) => (a.start < b.start ? -1 : 1)) });
+    toast(`Blocked ${formatDay(slot.day, store.today())} ${hmOf(slot.start)}–${hmOf(slot.end)} in your calendar`);
+    renderDetail(true);
+  } catch (err) { toast(`Google Calendar: ${err.message}`); }
+}
+async function unblock(id) {
+  const t = store.task(id);
+  if (!t || !t.block) return;
+  try {
+    const token = await calendarToken(true);
+    await calendarApi(token).deleteEvent(t.block.calendarId, t.block.eventId).catch((err) => { if (err.status !== 404 && err.status !== 410) throw err; });
+    const cal = store.state.calendar;
+    if (cal) store.setCalendar({ ...cal, events: cal.events.filter((e) => e.id !== t.block.eventId) });
+    store.updateTask(id, { block: null });
+    toast('Time block removed');
+    renderDetail(true);
+  } catch (err) { toast(`Google Calendar: ${err.message}`); }
+}
+
+function gcalSection() {
+  const g = gcfg();
+  const cal = store.state.calendar;
+  const used = cal ? new Set(cal.used || []) : new Set();
+  return `<section class="card" id="gcal">
+    <h2 class="card-title">${icon('upcoming')} Google Calendar</h2>
+    <p class="card-sub">Meetings come out of your daily hours. Next up checks what fits before your next meeting, the forecast subtracts meeting time, the journal lists your meetings, and a task can get a time block in your calendar. JourneyMan talks to Google straight from this browser with your own OAuth client ID. Setup takes about 5 minutes: <code>docs/GOOGLE_CALENDAR.md</code>. The next 4 weeks of events are kept only on this device.</p>
+    <div class="form-grid">
+      <label class="field"><span>OAuth client ID</span><input type="text" data-set="gcal.clientId" value="${esc(g.clientId)}" placeholder="1234…apps.googleusercontent.com" autocomplete="off"></label>
+      <label class="field"><span>Work day starts</span><input type="time" data-set="gcal.workStart" value="${esc(g.workStart)}"></label>
+      <label class="field"><span>Work day ends</span><input type="time" data-set="gcal.workEnd" value="${esc(g.workEnd)}"></label>
+    </div>
+    <div class="row-actions-inline">
+      <button type="button" class="btn small${cal ? '' : ' primary'}" data-gcal="${cal ? 'refresh' : 'connect'}">${cal ? `${icon('sync')} Refresh` : 'Connect Google Calendar'}</button>
+      ${cal ? `<span>${icon('ok')} ${cal.events.filter((e) => !e.allDay).length} events from ${used.size} calendar${used.size === 1 ? '' : 's'} · read ${agoText(cal.fetchedAt)}</span>
+        <button type="button" class="btn small ghost danger" data-gcal="disconnect">Disconnect</button>` : ''}
+    </div>
+    ${cal && cal.calendars?.length ? `<h3>Calendars that count as busy</h3>
+      <ul class="cal-pick">${cal.calendars.map((c) => `<li><label class="check-field"><input type="checkbox" data-gcal-cal="${esc(c.id)}"${used.has(c.id) ? ' checked' : ''}>
+        <i class="dot" style="--c:${esc(c.color || 'var(--c1)')}"></i>${esc(c.name)}${c.primary ? ' <span class="muted">(primary)</span>' : ''}</label></li>`).join('')}</ul>
+      <label class="field narrow-field"><span>Time blocks go to</span><select data-set="gcal.blockCalendar">${cal.calendars.map((c) => `<option value="${esc(c.primary ? 'primary' : c.id)}"${(g.blockCalendar || 'primary') === (c.primary ? 'primary' : c.id) ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>` : ''}
+  </section>`;
+}
+
+async function gcalAction(act, el) {
+  if (act === 'connect' || act === 'refresh') return refreshCalendar({ interactive: true, consent: act === 'connect' && !tokenValid(ui.gcalToken) });
+  if (act === 'disconnect') {
+    if (!confirm('Disconnect Google Calendar? Meetings stop counting, and time blocks already made stay in your calendar.')) return;
+    if (ui.gcalToken) revoke(ui.gcalToken);
+    ui.gcalToken = null;
+    storage.remove('meta', 'gcalToken');
+    store.setCalendar(null);
+    toast('Google Calendar disconnected');
+  }
+}
+
 /* ---------- actions ---------- */
 function select(id, openDetail) {
   ui.selected = id;
@@ -1085,7 +1307,7 @@ function select(id, openDetail) {
   $(`.task[data-id="${id}"]`)?.scrollIntoView({ block: 'nearest' });
 }
 function visibleIds() {
-  return $$('#view-body .task').filter((li) => !li.closest('details:not([open])')).map((li) => li.dataset.id);
+  return $$('#view-body .task:not(.ghost)').filter((li) => !li.closest('details:not([open])')).map((li) => li.dataset.id);
 }
 function moveSelection(step) {
   const ids = visibleIds();
@@ -1105,7 +1327,17 @@ function completeTask(id) {
     row.classList.add('completing');
     setTimeout(() => store.toggleDone(id), 260);
   } else store.toggleDone(id);
-  toast(t.done ? 'Marked as not done' : `Completed “${t.title}”`, () => store.restore('task', before));
+  // Undo: re-completing recreates the same next occurrence (its id is fixed); un-completing removes it.
+  const undo = () => (before.done ? store.updateTask(id, { done: true }) : store.undoComplete(before));
+  const msg = t.done ? 'Marked as not done' : `Completed “${t.title}”`;
+  if (!t.done && t.repeat) {
+    setTimeout(() => {
+      const next = store.task(store.task(id)?.nextId);
+      toast(next ? `Completed. Next one: ${formatDay(next.when || next.deadline, store.today())}` : 'Completed. That was the last one.', undo);
+    }, 300);
+    return;
+  }
+  toast(msg, undo);
 }
 function deleteTask(id) {
   const ids = visibleIds();
@@ -1156,6 +1388,7 @@ function updatePreview() {
   if (p.estimate) chips.push(`<span class="chip">${icon('clock')}${formatMinutes(p.estimate)}</span>`);
   if (p.priority) chips.push(`<span class="chip prio-chip">${'!'.repeat(p.priority)}</span>`);
   if (p.notionUrl) chips.push(`<span class="chip">${icon('notion')}Notion link</span>`);
+  if (p.repeat) chips.push(`<span class="chip new">${icon('repeat')}${esc(describeRepeat(p.repeat))}</span>`);
   const ctx = context();
   const dest = !p.projectId && !p.newProject && !p.areaId && !p.newArea && !p.when && !p.deadline
     ? `<span class="qa-dest">→ ${esc(ctx.when ? 'Today' : ctx.label)}</span>` : '';
@@ -1427,6 +1660,10 @@ function bind() {
       else if (v === 'review') reviewAction(act.dataset.act, act);
       return;
     }
+    const gh = e.target.closest('[data-ghost]');
+    if (gh) { openTask(gh.dataset.ghost); return; }
+    const gc = e.target.closest('[data-gcal]');
+    if (gc) { gcalAction(gc.dataset.gcal, gc); return; }
     const asg = e.target.closest('[data-assign]');
     if (asg) {
       const u = journalData(store, ui.journalDay || store.today()).summary.unmatched[Number(asg.dataset.assign)];
@@ -1450,6 +1687,12 @@ function bind() {
   });
   const onBodyInput = (e) => {
     const el = e.target;
+    if (el.dataset.gcalCal != null && e.type === 'change') {
+      const ids = $$('[data-gcal-cal]').filter((c) => c.checked).map((c) => c.dataset.gcalCal);
+      store.updateSettings({ gcal: { ...store.state.settings.gcal, calendars: ids } }, { silent: true });
+      if (tokenValid(ui.gcalToken)) refreshCalendar(); else toast('Choose Refresh to apply.');
+      return;
+    }
     if (el.dataset.set) { onSettingInput(el); return; }
     if (el.dataset.map && ui.notionDraft) {
       const d = ui.notionDraft;
@@ -1546,7 +1789,10 @@ function bind() {
     if (f === 'projectId' || f === 'areaId' || f === 'when') renderDetail(true);
   };
   detail.addEventListener('input', onDetail);
-  detail.addEventListener('change', onDetail);
+  detail.addEventListener('change', (e) => {
+    if (e.target.dataset.rep) { onRepeat(e.target); return; }
+    onDetail(e);
+  });
   detail.addEventListener('submit', (e) => {
     const form = e.target.closest('[data-log-form]');
     if (!form || !ui.selected) return;
@@ -1563,6 +1809,8 @@ function bind() {
   detail.addEventListener('click', (e) => {
     const id = ui.selected;
     if (!id) return;
+    const rd = e.target.closest('[data-rep-day]');
+    if (rd) { onRepeat(rd); return; }
     if (e.target.closest('#d-close')) { closeDetail(); return; }
     const w = e.target.closest('[data-when]')?.dataset.when;
     if (w) {
@@ -1588,6 +1836,8 @@ function bind() {
     const action = e.target.closest('[data-action]')?.dataset.action;
     if (action === 'toggle') completeTask(id);
     else if (action === 'timer') { toggleTimer(id); renderDetail(true); }
+    else if (action === 'block') blockTime(id);
+    else if (action === 'unblock') unblock(id);
     else if (action === 'delete') deleteTask(id);
     else if (action === 'keep') { store.updateTask(id, { inbox: false }); renderDetail(true); toast('Kept in Anytime'); }
   });
@@ -1617,6 +1867,7 @@ function bind() {
     checkDay();
     if (ui.route.view === 'journal') refreshActivity();
     runDeviceSync({ quiet: true });
+    if (store.state.calendar && Date.now() - Date.parse(store.state.calendar.fetchedAt) > 15 * 60_000) refreshCalendar();
   });
   setInterval(checkDay, 60_000);
 }
@@ -1704,6 +1955,10 @@ async function boot() {
   }
   store.subscribe(() => renderAll(false));
   await loadFolder();
+  const tok = await storage.getMeta('gcalToken');
+  if (tok) { delete tok.id; ui.gcalToken = tok; }
+  const calStale = () => !store.state.calendar || Date.now() - Date.parse(store.state.calendar.fetchedAt) > 15 * 60_000;
+  setInterval(() => { if (calStale()) refreshCalendar(); }, 5 * 60_000);
   bind();
   onRoute();
   scheduleAutoSync();
@@ -1711,6 +1966,7 @@ async function boot() {
   if (ui.pendingSession) { const sess = ui.pendingSession; ui.pendingSession = null; signedIn(sess); }
   scheduleDeviceSync();
   runDeviceSync({ quiet: true });
+  if (calStale()) refreshCalendar();
   store.subscribe(soonDeviceSync);
   window.addEventListener('online', () => runDeviceSync({ quiet: true }));
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {

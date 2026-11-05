@@ -182,3 +182,58 @@ What was built in each phase, how it was checked and what is left. Newest last.
 - **Browser run, part 1:** the real bridge code ran on Node with a fake Claude, plus a fake Supabase. It covered connecting the bridge, Brain dump (choose, then add), Suggest next steps, Ask Claude and start the timer, the journal draft and the review draft. All 10 Claude calls used `claude-opus-5-5`, `fallbacks: "default"`, and low or medium effort.
 - **Browser run, part 2:** the Mac signed in and merged its tasks. The phone (iPhone 14 size) signed in and replaced its starter data, ending with the same task count as the Mac. A task completed on the phone showed as done on the Mac after syncing. No console errors.
 - **Not tested against the real services**, because they need your accounts: Cloudflare, Notion, Anthropic, Supabase and the Mac helper on a real Mac. Each one's README has the setup steps, and Connections has a test button for the bridge.
+
+## After phase 5: Repeating tasks and Google Calendar (5 Nov 2026)
+
+### Repeating tasks
+
+- **`js/recurrence.js`:** rules every n days, weeks, months or years.
+  - Weekly repeats can be on chosen weekdays.
+  - Monthly and yearly repeats keep their day, landing on the 28th or 29th of shorter months, and 29 February moves to the 28th.
+  - Fortnightly repeats on chosen days stay on the right weeks.
+  - Optional "count from when I finish" and an end date.
+- **Quick add** understands `every mon wed fri`, `every mon and thu`, `every weekday`, `every weekend`, `every 3 days`, `every other week`, `every 2 weeks on fri`, `every month`, `every year`, `daily`, `weekly`, `fortnightly`, `monthly`, `yearly` and `weekdays`. "Every word" stays text.
+  - A new repeating task starts on the first matching day ("every mon" typed on a Wednesday starts next Monday).
+  - A repeating deadline ("every month due 30th") goes by the deadline.
+- **Finishing one creates the next.**
+  - The deadline keeps its gap from the date.
+  - Overdue series skip ahead to today instead of piling up copies.
+  - The next task's id is the series id plus its date, so two devices finishing the same one offline sync to a single next task.
+  - Undo and un-ticking remove the next task if it hasn't been touched.
+- **In the interface:**
+  - A ↻ chip on the row.
+  - A Repeat control in the details: presets plus a custom editor for every n units, weekday toggles, "from when I finish" and an end date.
+  - Upcoming repeats shown faintly in Upcoming.
+  - Future repeats counted in the workload forecast.
+
+### Google Calendar
+
+- **Connection:** no server. Google Identity Services runs in the browser with your own OAuth client ID (`docs/GOOGLE_CALENDAR.md`). The Calendar API is called directly, with the calendar-list read-only scope and the events scope (events are only written for time blocks).
+- **What's read:** the next 4 weeks, from the calendars you choose. Cancelled events, declined invitations and events marked "free" don't count. Time blocks made from JourneyMan aren't counted as meetings, because the task's estimate already counts.
+- **Where meetings show up:**
+  - Today's hours bar ("4h 45m free: 6h minus 1h 15m of meetings").
+  - Free time in Next up, with a new reason, "Fits before Supervisor meeting at 14:00".
+  - The workload forecast, per week.
+  - Upcoming day headers.
+  - The journal entry ("Meetings: 1h 15m (Standup, Supervisor meeting).").
+  - A "Calendar today" card on Today.
+- **Block time** finds the first free slot of the task's estimate (or 30m) in your work hours, today or the next 6 days, and creates the event. It sets the task's day and time, and Remove deletes the event.
+- **Sign-in:** tokens last about an hour, refresh every 15 minutes while valid, and are kept on this device. When one runs out, the last events read are used until you choose Refresh. Events aren't exported or synced.
+
+### Fixes found in testing
+
+- A time block was counted as a meeting on top of the task's own estimate, so Today undercounted your free time.
+- "Pay rent every month due nov 30" typed in Today got today as its date. A repeating deadline now keeps no date.
+- Undoing an un-tick restored a copy of the task whose next one had been removed. It now completes the task again, which recreates the same next one.
+
+### Checked
+
+- **Unit tests:** 70 in all, 12 new:
+  - Parsing, next dates (month ends, leap years, end dates, fortnights) and descriptions.
+  - Creating the next task, and undo.
+  - Counting from when you finish, overdue series, and the deadline gap.
+  - `setRepeat` and upcoming repeats, the forecast, and two devices finishing the same task.
+  - Normalising calendar events, merging busy time, meeting minutes, the next meeting, free slots, slots that roll over to the next day, and blocks not counting as meetings.
+  - Meetings in capacity, free time, Next up, the forecast and the journal.
+- **Browser run:** with a fake Google sign-in and Calendar API, plus a fake clock. It covered typing a repeat and seeing the preview, finishing one and getting the next on Friday, upcoming repeats, un-ticking removing the next one, the custom repeat editor, connecting the calendar (list plus 2 calendars read), meetings in the hours bar, the Today card and Next up, blocking time (POST) and removing it (DELETE), next week's forecast reduced by a 3-hour meeting, the journal's meeting line, and the calendar surviving a reload. No console errors.
+- **Not tried against the real Google yet:** that needs your OAuth client ID.
