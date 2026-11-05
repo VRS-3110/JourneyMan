@@ -17,7 +17,7 @@ Then open http://localhost:8000.
 - **Install it like an app.** Safari: File → Add to Dock. Chrome: the install icon in the address bar. It works offline.
 - **GitHub Pages.** It runs as-is: Settings → Pages → Deploy from a branch → `main` / (root).
 
-Everything works locally with no accounts. The optional connections (Notion, Claude, device sync) each take about 10 minutes to set up. See [Connections](#connections) below.
+Everything works locally with no accounts. The optional connections (Notion, Claude, Atlas, Google Calendar, device sync) each take between 2 and 10 minutes to set up. See [Connections](#connections) below.
 
 ## What it does
 
@@ -31,6 +31,7 @@ Everything works locally with no accounts. The optional connections (Notion, Cla
 | **Journal** | The **Mac helper** records which app and window you're in, kept only on your Mac. The **Journal** view matches that to your work, adds it to Time, compares plan with reality, moves unfinished tasks forward, and writes the day's entry (optionally with Claude). |
 | **Weekly review** | A guided six-step review with a streak, a DUE badge, and an optional reflection drafted by Claude. Sent to your Notion journal if you like. |
 | **Notion** | Links on any task, project or area that open in the Notion app. CSV import. **Two-way sync** with Notion task databases, with time written back. Journal entries and reviews added to your Notion journal. |
+| **Atlas** | Tasks from your Atlas mind maps, with a project for each map. Done goes both ways, Atlas focus time counts as deep work, and **Open in Atlas** jumps to the node. Through a shared folder on your Mac. |
 | **Google Calendar** | Meetings come out of your daily hours. Next up prefers tasks that fit before your next meeting, the forecast subtracts meeting time, Today shows your day's events, and the journal lists your meetings. **Block time** puts a task into your first free slot. |
 | **Devices** | Sync across your Mac and phone through your own Supabase project. Offline-first, and the newer edit wins. |
 
@@ -56,6 +57,7 @@ All of these are optional. Set them up in JourneyMan → Connections.
 | Connection | What it needs | Guide |
 | --- | --- | --- |
 | **Bridge** (for Notion sync and Claude) | A free Cloudflare Worker that holds your Notion token and Anthropic API key | [`worker/README.md`](worker/README.md) |
+| **Atlas** | The Atlas app with sharing on, and Chrome for a connected folder | [`docs/ATLAS.md`](docs/ATLAS.md) |
 | **Google Calendar** | Your own free Google OAuth client ID. No server needed. | [`docs/GOOGLE_CALENDAR.md`](docs/GOOGLE_CALENDAR.md) |
 | **Mac activity** | A tiny launchd helper (`bash install.sh`) | [`mac-agent/README.md`](mac-agent/README.md) |
 | **Device sync** | A free Supabase project | [`supabase/README.md`](supabase/README.md) |
@@ -66,6 +68,7 @@ Privacy:
 - Keys are stored only on the device where you enter them, and are left out of exports and sync.
 - Claude features send only what each feature needs, and only when you press a Claude button.
 - Mac activity never leaves the Mac unless you add it to Time or a journal.
+- The Atlas link is two files in a folder on your Mac.
 
 ## Code
 
@@ -82,6 +85,7 @@ js/recurrence.js      repeat rules: parsing, next dates, descriptions
 js/calendar.js        meetings, free time and slots (no network)
 js/gcal.js            Google sign-in and Calendar API, from the browser
 js/activity.js        Mac activity → sessions → matches → time and journal
+js/atlas.js           the Atlas link: tasks.json in, journeyman.json out
 js/notion.js          Notion mapping and two-way sync (through the bridge)
 js/sync.js            Supabase device sync
 js/ai.js              calls the Claude features on the bridge

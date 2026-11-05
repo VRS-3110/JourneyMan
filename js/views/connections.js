@@ -3,6 +3,7 @@
 
 import { esc, icon } from '../ui.js';
 import { targetName } from '../activity.js';
+import { summaryText } from '../atlas.js';
 
 const FIELD_LABELS = [
   ['title', 'Task name', ['title']],
@@ -125,5 +126,35 @@ export function activitySection(store, ui) {
       <button type="button" class="icon-btn" data-act="rule-del" data-i="${i}" aria-label="Delete rule">${icon('close')}</button></li>`).join('')}</ul>`
       : '<p class="hint">No rules yet. Use Assign… on unmatched time in the Journal. Window titles that contain a task, project or area name match on their own.</p>'}
     <label class="field"><span>Apps to ignore (comma-separated)</span><input type="text" data-set="activityIgnore" value="${esc((store.state.settings.activityIgnore || []).join(', '))}"></label>
+  </section>`;
+}
+
+export function atlasSection(store, ui, { canPick = false } = {}) {
+  const a = store.state.settings.atlas || {};
+  const linked = store.state.tasks.filter((t) => t.atlasId);
+  const open = linked.filter((t) => !t.done).length;
+  const maps = store.state.projects.filter((p) => p.atlasMapId).length;
+  const status = ui.atlas === 'granted' ? `${icon('ok')} Connected to the <b>${esc(ui.atlasHandle?.name || 'atlas')}</b> folder.`
+    : ui.atlas === 'prompt' ? `${icon('pause')} The Atlas folder needs reconnecting (the browser asks again after a restart).`
+      : 'Not connected.';
+  const buttons = !canPick ? ''
+    : ui.atlas === 'granted' ? `<button type="button" class="btn small" data-atlas="sync">${icon('sync')} Sync now</button>
+      <button type="button" class="btn small ghost danger" data-atlas="disconnect">Disconnect</button>`
+      : ui.atlas === 'prompt' ? '<button type="button" class="btn small primary" data-atlas="reconnect">Reconnect</button>'
+        : '<button type="button" class="btn small primary" data-atlas="connect">Connect the Atlas folder</button>';
+  return `<section class="card" id="atlas">
+    <h2 class="card-title">${icon('map')} Atlas</h2>
+    <p class="card-sub">Tasks from your Atlas mind maps show up here, with a project for each map. Names, dates and estimates come from Atlas. Done and time go both ways: tick a task in either app, and focus time from Atlas lands in Time as deep work. The two apps share the folder <code>Documents/JourneyMan/atlas</code>. In Atlas, open Settings → JourneyMan and turn on sharing, then connect that folder here. More in <code>docs/ATLAS.md</code>.</p>
+    <p>${status}${linked.length ? ` ${linked.length} linked task${linked.length === 1 ? '' : 's'} (${open} open) from ${maps} map${maps === 1 ? '' : 's'}.` : ''}</p>
+    ${ui.atlas === 'granted' && ui.atlasWaiting ? '<p class="hint">No tasks.json in that folder yet. Turn on sharing in Atlas → Settings → JourneyMan, or check you picked Documents/JourneyMan/atlas.</p>' : ''}
+    ${a.lastImport ? `<p class="muted">Last read ${ago(a.lastImport)}: ${esc(summaryText(a.lastResult))}${a.exportedAt ? ` · Atlas wrote it ${ago(a.exportedAt)}` : ''}</p>` : ''}
+    ${a.lastError ? `<p class="late-text">${icon('warn')} ${esc(a.lastError)}</p>` : ''}
+    <div class="row-actions-inline">
+      ${buttons}
+      <label class="btn small ghost" for="atlas-file">Import tasks.json…</label>
+      <input type="file" id="atlas-file" accept=".json,application/json" hidden>
+      <button type="button" class="btn small ghost" data-atlas="download">Save journeyman.json</button>
+    </div>
+    ${canPick ? '' : `<p class="hint">This browser can't keep a folder connected (Chrome can). Import Atlas's tasks.json here, and save journeyman.json into the same folder for Atlas to read.</p>`}
   </section>`;
 }

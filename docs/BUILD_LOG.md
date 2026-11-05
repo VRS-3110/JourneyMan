@@ -237,3 +237,49 @@ What was built in each phase, how it was checked and what is left. Newest last.
   - Meetings in capacity, free time, Next up, the forecast and the journal.
 - **Browser run:** with a fake Google sign-in and Calendar API, plus a fake clock. It covered typing a repeat and seeing the preview, finishing one and getting the next on Friday, upcoming repeats, un-ticking removing the next one, the custom repeat editor, connecting the calendar (list plus 2 calendars read), meetings in the hours bar, the Today card and Next up, blocking time (POST) and removing it (DELETE), next week's forecast reduced by a 3-hour meeting, the journal's meeting line, and the calendar surviving a reload. No console errors.
 - **Not tried against the real Google yet:** that needs your OAuth client ID.
+
+## After that: Linked with Atlas (5 Nov 2026)
+
+Atlas, the Mac mind-mapping app, and JourneyMan now share tasks through `~/Documents/JourneyMan/atlas`. Atlas writes `tasks.json` and JourneyMan writes `journeyman.json`. The guide is [`docs/ATLAS.md`](ATLAS.md). The Atlas side is in the Atlas repo (`JOURNEYMAN.md` there).
+
+### What it does
+
+- **Tasks in:** each Atlas map becomes a project. A time block gives the day, time and estimate, the due date gives the deadline, and priority maps to `!`–`!!!`.
+- **Edits:** Atlas wins field by field, only when that field changed in Atlas. So renaming a task here, or the journal moving it to tomorrow, sticks until Atlas changes the same thing.
+- **Done:** both ways. The later change wins. Tasks now carry `doneChangedAt`, and undo stamps it too.
+- **Time:** Atlas focus time becomes deep-work entries (only the growth each time). Time tracked here goes back as its own total, without Atlas's focus time, so neither app counts anything twice.
+- **Gone from Atlas:** removed here, or unlinked and kept if it has time on it. A task deleted here stays deleted until it changes in Atlas.
+- **Connections ▸ Atlas:** connect the folder in Chrome (read and write), with Sync now and Disconnect. Import tasks.json and Save journeyman.json are there for Safari.
+- **Links:** an Atlas row in task details with **Open in Atlas** (`atlas://node/<id>`), and a map icon on the task row. A new `#task/<id>` route opens any task, and Atlas's Open in JourneyMan uses it. The address is swapped for the task's list, so Back doesn't loop.
+- **Sync timing:** on open, when the tab comes back, every minute (skipped when the file hasn't changed), and a write 1.5s after any change (skipped when nothing in it changed).
+
+### Fixes found in testing
+
+- An edit in Atlas that wasn't a status change (a rename) undid a tick made here. The import used Atlas's last-edit time when no status time was given. It now goes only by when the status changed.
+
+### Checked
+
+- **Unit tests:** 83 in all. 13 are new in `test/atlas.test.js`, covering:
+  - Reading the file.
+  - Field mapping.
+  - First import and re-import.
+  - Field-by-field wins.
+  - Done both ways.
+  - A rename in Atlas not undoing a tick.
+  - Undo stamping.
+  - Focus time.
+  - Gone, cancelled and archived tasks.
+  - Deletion here.
+  - Map projects.
+  - The export.
+- **Browser run (Chromium):** the folder picker was stood in for by the browser's private file system, so the real reading and writing code ran. It covered:
+  - Connecting the folder: 2 tasks and a Thesis project were imported.
+  - `journeyman.json` being written.
+  - `#task/atlas:<id>` in lower case opening the task in its project, with the Atlas row.
+  - Ticking it here, which was written within 2 seconds.
+  - Atlas renaming the task and adding 25 minutes of focus: the new name and a 25-minute deep-work entry arrived, the tick stayed, and 0 minutes were sent back.
+  - The connection surviving a reload.
+  - No console errors.
+- **Round trip with Atlas's own code:** Atlas's Swift was compiled with Swift 6.0 on Linux and wrote a real `tasks.json`. This app's modules then imported it, ticked a task, logged 30 minutes and wrote `journeyman.json`. Atlas applied that as one undo step (done, and 30 minutes). Reading again on both sides changed nothing.
+- **Not tried yet:** Atlas's SwiftUI parts on a Mac, and Chrome asking for a real folder.
+

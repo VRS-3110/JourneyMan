@@ -21,6 +21,7 @@ export const DEFAULT_SETTINGS = {
   notion: { workerUrl: '', appKey: '', links: [], journal: null, autoSync: false },
   gcal: { clientId: '', calendars: null, blockCalendar: 'primary', workStart: '09:00', workEnd: '18:00' },
   sync: { url: '', anonKey: '', email: '', session: null, state: {}, auto: true },
+  atlas: { lastImport: null, lastResult: null, lastError: null, exportedAt: null },
   ai: { available: false },
 };
 
@@ -84,6 +85,7 @@ export function createStore(persist = {}) {
       state.settings.sync = { ...DEFAULT_SETTINGS.sync, ...(state.settings.sync || {}) };
       state.settings.ai = { ...DEFAULT_SETTINGS.ai, ...(state.settings.ai || {}) };
       state.settings.gcal = { ...DEFAULT_SETTINGS.gcal, ...(state.settings.gcal || {}) };
+      state.settings.atlas = { ...DEFAULT_SETTINGS.atlas, ...(state.settings.atlas || {}) };
       state.calendar = data.calendar || null;
       emit();
     },
@@ -210,6 +212,7 @@ export function createStore(persist = {}) {
       if (t.inbox && (fields.projectId || fields.areaId || fields.when || fields.deadline)) next.inbox = false;
       if (fields.done === true && !t.done) next.doneAt = stamp();
       if (fields.done === false) next.doneAt = null;
+      if (fields.done != null && !!fields.done !== !!t.done) next.doneChangedAt = stamp(); // Atlas uses it to tell who ticked last
       if (fields.done === true && !t.done && next.repeat && !next.nextId) next.nextId = spawnNext(next);
       if (fields.done === false && t.done && t.nextId) { dropPristine(t.nextId); next.nextId = null; }
       put('task', next);
@@ -228,7 +231,7 @@ export function createStore(persist = {}) {
     undoComplete(before) {
       const cur = store.task(before.id);
       if (cur && cur.nextId && cur.nextId !== before.nextId) dropPristine(cur.nextId);
-      put('task', before);
+      put('task', cur && !!cur.done !== !!before.done ? { ...before, doneChangedAt: stamp() } : before);
       emit();
     },
     toggleDone(id) {

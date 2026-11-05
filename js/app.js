@@ -12,7 +12,7 @@ import { insightsHead, insightsBody, insightsAfter, nextUpPanel, healthBadge, pr
 import { hideTip } from './charts.js';
 import { journalHead, journalBody, journalAfter, journalData, shiftDay, longDay } from './views/journal.js';
 import { reviewHead, reviewBody, reviewSummary, reviewDue } from './views/review.js';
-import { connectionsHead, bridgeSection, notionSection, activitySection } from './views/connections.js';
+import { connectionsHead, bridgeSection, notionSection, activitySection, atlasSection } from './views/connections.js';
 import { parseActivity, toSessions, applyActivity, rollForward, suggestRule, journalText, targetName } from './activity.js';
 import { makeApi, syncLink, inspectDatabase, journalMap, notionId, writeJournal } from './notion.js';
 import { localDay } from './reports.js';
@@ -23,6 +23,7 @@ import { findByName } from './parse.js';
 import { describeRepeat } from './recurrence.js';
 import { eventsOn, findSlot, normalizeEvents } from './calendar.js';
 import { authorize, revoke, tokenValid, calendarApi, readCalendar, blockBody } from './gcal.js';
+import { ATLAS_FILE, ATLAS_PREFIX, JOURNEYMAN_FILE, parseAtlasExport, importAtlas, journeymanExport, exportKey, summaryText, atlasTaskId, atlasLink, atlasNodeOf } from './atlas.js';
 
 const VIEWS = {
   inbox: { title: 'Inbox', icon: 'inbox' },
@@ -58,6 +59,7 @@ function go(hash) {
   else location.hash = hash;
 }
 function onRoute() {
+  if (location.hash.startsWith('#task/')) { routeToTask(decodeURIComponent(location.hash.slice(6))); return; }
   addedMsg = null;
   ui.route = parseRoute();
   // A task asked for before the page changed (search result, chart dot, timer) opens once the new view is up.
@@ -182,6 +184,17 @@ function renderHead() {
   }
 }
 
+/* Where an Atlas task came from, and a way back. */
+function atlasRow(t) {
+  const node = atlasNodeOf(t);
+  if (!node) return '';
+  const map = t.atlasMapId && store.state.projects.find((p) => p.atlasMapId === t.atlasMapId);
+  const where = !t.atlasId ? 'No longer in Atlas. Kept for its tracked time.'
+    : `From ${map ? `the “${esc(map.atlasMapName || map.name)}” map` : 'the Atlas planner'}. Name and dates follow Atlas; done and time go both ways.`;
+  return `<div class="d-notion d-atlas"><span class="d-label">${icon('map')} Atlas</span>
+    <span class="notion-row"><small class="muted grow">${where}</small>${t.atlasId ? `<a class="btn small" href="${atlasLink(node)}">Open in Atlas</a>` : ''}</span></div>`;
+}
+
 function notionField(url, attr) {
   return `<label class="mini notion-field"><span>${icon('notion')} Notion page</span>
     <span class="notion-row"><input type="url" ${attr === 'pfield' ? 'data-pfield' : 'data-afield'}="notionUrl" value="${esc(url || '')}" placeholder="Paste a Notion link">
@@ -243,6 +256,7 @@ function taskRow(t, opts = {}) {
   if (t.block && !t.done) chips.push(`<span class="chip" title="Time blocked in your calendar">${icon('upcoming')}${hmOf(t.block.start)}</span>`);
   if (t.notes) chips.push(`<span class="chip icon-only" title="Has notes">${icon('note')}</span>`);
   if (t.notionUrl) chips.push(`<a class="chip notion" href="${esc(notionAppUrl(t.notionUrl))}" title="Open in Notion" aria-label="Open in Notion">${icon('notion')}</a>`);
+  if (t.atlasId) chips.push(`<a class="chip notion" href="${atlasLink(t.atlasId)}" title="Open in Atlas" aria-label="Open in Atlas">${icon('map')}</a>`);
   const triage = opts.triage
     ? `<span class="row-actions"><button type="button" data-action="today">Today</button><button type="button" data-action="move">Move…</button><button type="button" data-action="keep" title="No project or date: keep it in Anytime">Keep</button></span>`
     : '';
@@ -439,6 +453,7 @@ function renderDetail(force) {
       <label class="d-notion"><span>${icon('notion')} Notion page</span>
         <span class="notion-row"><input type="url" data-field="notionUrl" value="${esc(t.notionUrl || '')}" placeholder="Paste a Notion link">
         <a class="btn small notion-open" href="${t.notionUrl ? esc(notionAppUrl(t.notionUrl)) : '#'}"${t.notionUrl ? '' : ' hidden'}>Open</a></span></label>
+      ${atlasRow(t)}
     </div>
     ${repeatSection(t)}
     ${timeSection(t)}
@@ -577,21 +592,38 @@ function recapCard() {
 }
 
 /* Opens a task wherever it lives: its home list, selected, with details. */
+const homeOf = (t) => (t.done ? 'logbook' : t.projectId ? 'project/' + t.projectId : t.inbox ? 'inbox'
+  : t.when && t.when <= store.today() ? 'today' : t.when ? 'upcoming' : t.areaId ? 'area/' + t.areaId : 'anytime');
 function openTask(id) {
   const t = store.task(id);
   if (!t) return;
-  const home = t.done ? 'logbook' : t.projectId ? 'project/' + t.projectId : t.inbox ? 'inbox'
-    : t.when && t.when <= store.today() ? 'today' : t.when ? 'upcoming' : t.areaId ? 'area/' + t.areaId : 'anytime';
+  const home = homeOf(t);
   if (location.hash.slice(1) === home) { select(t.id, true); return; }
   ui.pendingSelect = t.id;
   go(home);
 }
 
+/*
+  A link to one task, #task/<id>, as Atlas's "Open in JourneyMan" makes. The address is swapped for the
+  task's home list (so Back doesn't bounce), and an Atlas task not seen yet is looked for in the Atlas folder first.
+*/
+function routeToTask(raw) {
+  const id = raw.toLowerCase().startsWith(ATLAS_PREFIX) ? atlasTaskId(raw.slice(ATLAS_PREFIX.length)) : raw;
+  const t = store.task(id);
+  if (t) ui.pendingSelect = t.id;
+  history.replaceState(null, '', '#' + (t ? homeOf(t) : 'today'));
+  onRoute();
+  if (t) return;
+  if (!id.startsWith(ATLAS_PREFIX)) { toast('That task isn’t in JourneyMan.'); return; }
+  if (ui.atlas !== 'granted') { toast('That Atlas task isn’t here yet. Connect the Atlas folder in Connections.'); return; }
+  runAtlasSync({ force: true }).then(() => (store.task(id) ? openTask(id) : toast('That Atlas task isn’t in JourneyMan yet. Is sharing on in Atlas → Settings?')));
+}
+
 /* ---------- phase 4: Notion bridge, journal, review ---------- */
 const bridgeReady = () => !!(store.state.settings.notion.workerUrl && store.state.settings.notion.appKey);
 const notionApi = () => makeApi(store.state.settings.notion);
-function connectionsExtra() { return ', Google Calendar, device sync and Claude'; }
-function extraConnections() { return gcalSection() + syncSection() + aiSection(); }
+function connectionsExtra() { return ', Atlas, Google Calendar, device sync and Claude'; }
+function extraConnections() { return atlasSection(store, ui, { canPick: canPickFolder() }) + gcalSection() + syncSection() + aiSection(); }
 
 function setNotion(fields) {
   store.updateSettings({ notion: { ...store.state.settings.notion, ...fields } });
@@ -664,6 +696,110 @@ async function connectFolder(reconnect) {
   renderBody();
   if (ui.folder === 'granted') toast('Activity folder connected');
 }
+/* ---------- Atlas: tasks.json in, journeyman.json out, through a shared folder ---------- */
+const canPickFolder = () => typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function';
+const setAtlas = (fields) => store.updateSettings({ atlas: { ...store.state.settings.atlas, ...fields } }, { silent: true });
+async function loadAtlasFolder() {
+  const rec = await storage.getMeta('atlasDir');
+  ui.atlasHandle = rec ? rec.handle : null;
+  ui.atlas = null;
+  if (ui.atlasHandle && ui.atlasHandle.queryPermission) {
+    try { ui.atlas = await ui.atlasHandle.queryPermission({ mode: 'readwrite' }); } catch { ui.atlas = null; }
+  }
+}
+/* Picking ~/Documents/JourneyMan itself works too: its atlas folder is used (and made, if Atlas hasn't yet). */
+async function atlasFolderIn(handle) {
+  try { await handle.getFileHandle(ATLAS_FILE); return handle; } catch { /* not here */ }
+  try { return await handle.getDirectoryHandle('atlas'); } catch { /* none */ }
+  if (handle.name === 'JourneyMan') { try { return await handle.getDirectoryHandle('atlas', { create: true }); } catch { /* read-only */ } }
+  return handle;
+}
+async function connectAtlas(reconnect) {
+  try {
+    if (reconnect && ui.atlasHandle) {
+      ui.atlas = await ui.atlasHandle.requestPermission({ mode: 'readwrite' });
+    } else {
+      const picked = await window.showDirectoryPicker({ id: 'journeyman-atlas', mode: 'readwrite', startIn: 'documents' });
+      ui.atlasHandle = await atlasFolderIn(picked);
+      ui.atlas = 'granted';
+      storage.save('meta', { id: 'atlasDir', handle: ui.atlasHandle });
+    }
+  } catch { return; }
+  ui.atlasFileTime = 0;
+  ui.atlasWritten = null;
+  await runAtlasSync({ quiet: false });
+}
+function disconnectAtlas() {
+  storage.remove('meta', 'atlasDir');
+  ui.atlasHandle = null;
+  ui.atlas = null;
+  ui.atlasWaiting = false;
+  setAtlas({ lastError: null });
+  renderBody();
+  toast('Atlas folder disconnected. Tasks already here stay.');
+}
+function applyAtlas(data, { quiet }) {
+  const sum = importAtlas(store, data);
+  setAtlas({ lastImport: new Date().toISOString(), lastResult: sum, lastError: null, exportedAt: data.exportedAt });
+  if (!quiet) toast(`Atlas: ${summaryText(sum)}`);
+  return sum;
+}
+/* Reads tasks.json when Atlas has rewritten it, then writes journeyman.json if anything here changed. */
+async function runAtlasSync({ quiet = true, force = false } = {}) {
+  if (ui.atlas !== 'granted' || !ui.atlasHandle || ui.atlasBusy) return;
+  ui.atlasBusy = true;
+  try {
+    let file = null;
+    try { file = await (await ui.atlasHandle.getFileHandle(ATLAS_FILE)).getFile(); } catch { file = null; }
+    ui.atlasWaiting = !file;
+    if (file && (force || !quiet || file.lastModified !== ui.atlasFileTime)) {
+      const data = parseAtlasExport(await file.text());
+      ui.atlasFileTime = file.lastModified;
+      applyAtlas(data, { quiet });
+    } else if (!file && !quiet) toast('No tasks.json from Atlas in that folder yet.');
+    await writeAtlasFile();
+  } catch (err) {
+    setAtlas({ lastError: err.message });
+    if (!quiet) toast(`Atlas: ${err.message}`);
+  } finally {
+    ui.atlasBusy = false;
+  }
+  if (ui.route.view === 'connections') renderBody();
+}
+async function writeAtlasFile() {
+  if (ui.atlas !== 'granted' || !ui.atlasHandle) return;
+  const data = journeymanExport(store, { appUrl: location.href });
+  const key = exportKey(data);
+  if (key === ui.atlasWritten) return;
+  const fh = await ui.atlasHandle.getFileHandle(JOURNEYMAN_FILE, { create: true });
+  const w = await fh.createWritable();
+  await w.write(JSON.stringify(data, null, 2) + '\n');
+  await w.close();
+  ui.atlasWritten = key;
+}
+let atlasWriteTimer = 0;
+function soonAtlasWrite() {
+  if (ui.atlas !== 'granted') return;
+  clearTimeout(atlasWriteTimer);
+  atlasWriteTimer = setTimeout(() => writeAtlasFile().catch((err) => setAtlas({ lastError: err.message })), 1500);
+}
+async function atlasAction(act) {
+  if (act === 'connect') return connectAtlas(false);
+  if (act === 'reconnect') return connectAtlas(true);
+  if (act === 'sync') return runAtlasSync({ quiet: false, force: true });
+  if (act === 'disconnect') return disconnectAtlas();
+  if (act === 'download') download(JOURNEYMAN_FILE, JSON.stringify(journeymanExport(store, { appUrl: location.href }), null, 2) + '\n', 'application/json');
+}
+async function importAtlasFile(file) {
+  try {
+    applyAtlas(parseAtlasExport(await file.text()), { quiet: false });
+  } catch (err) {
+    setAtlas({ lastError: err.message });
+    toast(`Atlas: ${err.message}`);
+  }
+  renderBody();
+}
+
 /* Imports one or more .jsonl files; samples are split by local day. */
 async function importActivity(files) {
   const byDay = new Map();
@@ -1664,6 +1800,8 @@ function bind() {
     if (gh) { openTask(gh.dataset.ghost); return; }
     const gc = e.target.closest('[data-gcal]');
     if (gc) { gcalAction(gc.dataset.gcal, gc); return; }
+    const at = e.target.closest('[data-atlas]');
+    if (at) { atlasAction(at.dataset.atlas); return; }
     const asg = e.target.closest('[data-assign]');
     if (asg) {
       const u = journalData(store, ui.journalDay || store.today()).summary.unmatched[Number(asg.dataset.assign)];
@@ -1687,6 +1825,7 @@ function bind() {
   });
   const onBodyInput = (e) => {
     const el = e.target;
+    if (el.id === 'atlas-file') { if (el.files.length) importAtlasFile(el.files[0]); el.value = ''; return; }
     if (el.dataset.gcalCal != null && e.type === 'change') {
       const ids = $$('[data-gcal-cal]').filter((c) => c.checked).map((c) => c.dataset.gcalCal);
       store.updateSettings({ gcal: { ...store.state.settings.gcal, calendars: ids } }, { silent: true });
@@ -1867,6 +2006,7 @@ function bind() {
     checkDay();
     if (ui.route.view === 'journal') refreshActivity();
     runDeviceSync({ quiet: true });
+    runAtlasSync({ quiet: true });
     if (store.state.calendar && Date.now() - Date.parse(store.state.calendar.fetchedAt) > 15 * 60_000) refreshCalendar();
   });
   setInterval(checkDay, 60_000);
@@ -1955,6 +2095,7 @@ async function boot() {
   }
   store.subscribe(() => renderAll(false));
   await loadFolder();
+  await loadAtlasFolder();
   const tok = await storage.getMeta('gcalToken');
   if (tok) { delete tok.id; ui.gcalToken = tok; }
   const calStale = () => !store.state.calendar || Date.now() - Date.parse(store.state.calendar.fetchedAt) > 15 * 60_000;
@@ -1968,6 +2109,9 @@ async function boot() {
   runDeviceSync({ quiet: true });
   if (calStale()) refreshCalendar();
   store.subscribe(soonDeviceSync);
+  runAtlasSync({ quiet: true });
+  setInterval(() => runAtlasSync({ quiet: true }), 60_000);
+  store.subscribe(soonAtlasWrite);
   window.addEventListener('online', () => runDeviceSync({ quiet: true }));
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
